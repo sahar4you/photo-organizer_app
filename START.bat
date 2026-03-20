@@ -1,0 +1,3 @@
+@echo off
+echo Starting Photo Organizer...
+npx electron .

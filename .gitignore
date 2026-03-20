@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+face_names.json
+*.egg-info/
+.DS_Store
+Thumbs.db
+*.log
