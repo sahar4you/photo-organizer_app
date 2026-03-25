@@ -27,9 +27,27 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.3gp'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 THUMB_SIZE = (300, 300)
-THUMB_DISK_WIDTH = 200   # width for on-disk thumbnail cache
 CACHE_DIR = ".cache"
 THUMBS_DIR = os.path.join(CACHE_DIR, "thumbnails")
+
+# ---- JSON stdout helpers ----
+def emit_progress(value, current, total, status="scanning"):
+    """Write a progress JSON line to stdout."""
+    print(json.dumps({"type": "progress", "value": value,
+                       "current": current, "total": total,
+                       "status": status}), flush=True)
+
+def emit_result(data):
+    """Write the final result JSON line to stdout."""
+    print(json.dumps({"type": "result", "data": data}), flush=True)
+
+def emit_error(message):
+    """Write an error JSON line to stdout."""
+    print(json.dumps({"type": "error", "message": message}), flush=True)
+
+def log(msg):
+    """Write a log message to stderr (never stdout)."""
+    print(msg, file=sys.stderr, flush=True)
 
 # ---- EXIF ----
 def get_exif_data(filepath):
@@ -87,36 +105,6 @@ def make_thumbnail_b64(filepath):
         img.save(buf, format='JPEG', quality=60)
         return base64.b64encode(buf.getvalue()).decode()
     except: return ""
-
-def make_disk_thumbnail(filepath, folder, rel_path):
-    """Generate a 200px-wide JPEG thumbnail on disk under .cache/thumbnails/.
-    Returns the relative thumbnail path, or empty string on failure."""
-    if not HAS_PIL:
-        return ""
-    thumbs_dir = Path(folder) / THUMBS_DIR
-    thumb_rel = Path(rel_path).with_suffix('.jpg')
-    thumb_path = thumbs_dir / thumb_rel
-    # Skip if already cached
-    if thumb_path.exists():
-        try:
-            src_mtime = os.path.getmtime(filepath)
-            thumb_mtime = os.path.getmtime(thumb_path)
-            if thumb_mtime >= src_mtime:
-                return str(Path(THUMBS_DIR) / thumb_rel)
-        except OSError:
-            pass
-    try:
-        thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        img = Image.open(filepath)
-        ratio = THUMB_DISK_WIDTH / img.width if img.width > THUMB_DISK_WIDTH else 1
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        img = img.resize(new_size, Image.LANCZOS)
-        if img.mode in ('RGBA', 'P'):
-            img = img.convert('RGB')
-        img.save(str(thumb_path), format='JPEG', quality=75)
-        return str(Path(THUMBS_DIR) / thumb_rel)
-    except Exception:
-        return ""
 
 # ---- Face Detection ----
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
@@ -244,8 +232,7 @@ def scan_folder(folder):
 
     # Warn if large library
     if total_count > 3000:
-        print(f"Warning: {total_count} files found. Scanning may take a while.",
-              file=sys.stderr)
+        log(f"Warning: {total_count} files found. Scanning may take a while.")
 
     face_cascade, profile_cascade = None, None
     all_face_data = []
@@ -289,10 +276,8 @@ def scan_folder(folder):
         if not date_taken: date_taken = mod_time
 
         thumb = ""
-        thumbnail_path = ""
         if not is_video:
             thumb = make_thumbnail_b64(str(filepath))
-            thumbnail_path = make_disk_thumbnail(str(filepath), str(folder), rel_path)
 
         face_count = 0
         if not is_video and face_cascade is not None:
@@ -323,19 +308,18 @@ def scan_folder(folder):
             "gps_lat": gps_lat,
             "gps_lon": gps_lon,
             "thumb": thumb,
-            "thumbnail_path": thumbnail_path,
             "faces": [],
             "face_count": face_count,
             "tags": [],
         }
         files.append(entry)
         pct = int((i+1)/total_count*100) if total_count else 100
-        print(f"\rScanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}", end="", flush=True)
-        # Emit machine-readable progress for Electron
+        log(f"Scanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}")
+        # Emit JSON progress to stdout every 10 files
         if (i + 1) % 10 == 0 or (i + 1) == total_count:
-            print(f'\n{{"progress":{pct},"current":{i+1},"total":{total_count}}}', flush=True)
+            emit_progress(pct, i + 1, total_count, "scanning")
 
-    print(f"\rScanned {len(files)} media files.                    ", flush=True)
+    log(f"Scanned {len(files)} media files.")
 
     # Load and apply photo tags
     tags_path = folder / "photo_tags.json"
@@ -350,7 +334,8 @@ def scan_folder(folder):
 
     person_thumbs = {}
     if face_cascade and all_face_data:
-        print("Clustering faces...", flush=True)
+        emit_progress(100, total_count, total_count, "clustering faces")
+        log("Clustering faces...")
         file_faces, person_thumbs = cluster_faces(all_face_data)
         for file_idx, persons in file_faces.items():
             if file_idx < len(files):
@@ -383,12 +368,13 @@ def scan_folder(folder):
     try:
         from duplicate_detector import detect_duplicates
         dry_run = "--move-duplicates" not in sys.argv
-        print("Running duplicate detection...", flush=True)
+        emit_progress(100, total_count, total_count, "detecting duplicates")
+        log("Running duplicate detection...")
         duplicate_result = detect_duplicates(files, folder, threshold=10, dry_run=dry_run)
     except ImportError:
-        print("Warning: duplicate_detector module not found, skipping.", file=sys.stderr)
+        log("Warning: duplicate_detector module not found, skipping.")
     except Exception as e:
-        print(f"Warning: Duplicate detection failed: {e}", file=sys.stderr)
+        log(f"Warning: Duplicate detection failed: {e}")
 
     return files, person_thumbs, duplicate_result
 
@@ -398,10 +384,12 @@ if __name__ == "__main__":
 
     folder = Path(folder).resolve()
     if not folder.is_dir():
-        print(json.dumps({"error": f"Not a directory: {folder}"}))
+        emit_error(f"Not a directory: {folder}")
         sys.exit(1)
 
     files, person_thumbs, duplicate_result = scan_folder(folder)
+
+    emit_progress(100, len(files), len(files), "finalizing")
 
     result = {
         "folder": str(folder),
@@ -422,11 +410,13 @@ if __name__ == "__main__":
         result["duplicate_moved"] = duplicate_result["moved"]
 
     if json_mode:
-        print(json.dumps(result))
+        emit_result(result)
     else:
-        print(f"Total: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
+        # Human-readable output to stderr for non-JSON mode
+        log(f"Total: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
         if duplicate_result:
             s = duplicate_result["stats"]
-            print(f"Duplicates: {s['exact_groups']} exact groups, "
-                  f"{s['near_groups']} near groups, "
-                  f"{s['duplicates_found']} total duplicates found")
+            log(f"Duplicates: {s['exact_groups']} exact groups, "
+                f"{s['near_groups']} near groups, "
+                f"{s['duplicates_found']} total duplicates found")
+        emit_result(result)
