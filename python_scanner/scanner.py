@@ -284,12 +284,24 @@ def scan_folder(folder):
             "thumb": thumb,
             "faces": [],
             "face_count": face_count,
+            "tags": [],
         }
         files.append(entry)
         pct = int((i+1)/total_count*100) if total_count else 100
         print(f"\rScanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}", end="", flush=True)
 
     print(f"\rScanned {len(files)} media files.                    ", flush=True)
+
+    # Load and apply photo tags
+    tags_path = folder / "photo_tags.json"
+    if tags_path.exists():
+        try:
+            with open(tags_path) as f:
+                tags_map = json.load(f)
+            for entry in files:
+                entry["tags"] = tags_map.get(entry["rel_path"], [])
+        except Exception:
+            pass
 
     person_thumbs = {}
     if face_cascade and all_face_data:
