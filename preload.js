@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('api', {
   loadFaceNames: (folderPath) => ipcRenderer.invoke('load-face-names', folderPath),
   readImage: (filePath) => ipcRenderer.invoke('read-image', filePath),
   moveDuplicates: (folderPath) => ipcRenderer.invoke('move-duplicates', folderPath),
-  deleteFiles: (filePaths) => ipcRenderer.invoke('delete-files', filePaths),
+  trashFiles: (filePaths) => ipcRenderer.invoke('trash-files', filePaths),
+  saveIgnoredGroups: (folderPath, groups) => ipcRenderer.invoke('save-ignored-groups', folderPath, groups),
+  loadIgnoredGroups: (folderPath) => ipcRenderer.invoke('load-ignored-groups', folderPath),
   onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_, msg) => callback(msg)),
 });

@@ -1,5 +1,5 @@
 // Ready to use – PhotoOrganizer Electron Main Process
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -163,18 +163,36 @@ ipcMain.handle('move-duplicates', async (event, folderPath) => {
   });
 });
 
-// Delete duplicate files permanently
-ipcMain.handle('delete-files', async (event, filePaths) => {
+// Trash duplicate files (send to recycle bin)
+ipcMain.handle('trash-files', async (event, filePaths) => {
   const results = [];
   for (const fp of filePaths) {
     try {
-      fs.unlinkSync(fp);
-      results.push({ path: fp, status: 'deleted' });
+      await shell.trashItem(fp);
+      results.push({ path: fp, status: 'trashed' });
     } catch (e) {
       results.push({ path: fp, status: 'error', message: e.message });
     }
   }
   return results;
+});
+
+// Save ignored duplicate groups to folder
+ipcMain.handle('save-ignored-groups', async (event, folderPath, ignoredGroups) => {
+  const filePath = path.join(folderPath, 'ignored_duplicates.json');
+  fs.writeFileSync(filePath, JSON.stringify(ignoredGroups, null, 2), 'utf8');
+  return filePath;
+});
+
+// Load ignored duplicate groups from folder
+ipcMain.handle('load-ignored-groups', async (event, folderPath) => {
+  const filePath = path.join(folderPath, 'ignored_duplicates.json');
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return [];
+  }
 });
 
 function getScriptPath() {
