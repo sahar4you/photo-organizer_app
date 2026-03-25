@@ -78,8 +78,17 @@ function spawnScanner(folderPath, extraArgs, progressFilter) {
       stdout += data.toString();
       const lines = data.toString().split('\n');
       lines.forEach((line) => {
-        if (progressFilter(line)) {
-          mainWindow.webContents.send('scan-progress', line.trim());
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        // Forward JSON progress objects
+        if (trimmed.startsWith('{"progress"')) {
+          try {
+            mainWindow.webContents.send('scan-progress-json', JSON.parse(trimmed));
+          } catch (_) {}
+          return;
+        }
+        if (progressFilter(trimmed)) {
+          mainWindow.webContents.send('scan-progress', trimmed);
         }
       });
     });
@@ -258,4 +267,61 @@ ipcMain.handle('move-tagged-files', async (event, folderPath, relPaths, targetSu
     }
   }
   return results;
+});
+
+// Export selected files to Exported/<subfolder>/
+ipcMain.handle('export-files', async (event, folderPath, relPaths, subfolder, preserveStructure) => {
+  const results = [];
+  const exportDir = path.join(folderPath, 'Exported', subfolder);
+  for (const rel of relPaths) {
+    const src = path.join(folderPath, rel);
+    const destDir = preserveStructure
+      ? path.join(exportDir, path.dirname(rel))
+      : exportDir;
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    let dest = path.join(destDir, path.basename(rel));
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(rel);
+      const stem = path.basename(rel, ext);
+      let counter = 1;
+      while (fs.existsSync(dest)) {
+        dest = path.join(destDir, `${stem}_${counter}${ext}`);
+        counter++;
+      }
+    }
+    try {
+      fs.copyFileSync(src, dest);
+      results.push({ source: rel, destination: path.relative(folderPath, dest), status: 'exported' });
+    } catch (e) {
+      results.push({ source: rel, destination: '', status: 'error', message: e.message });
+    }
+  }
+  return { results, exportPath: exportDir };
+});
+
+// Clear cache (hash_cache.json + .cache/thumbnails/)
+ipcMain.handle('clear-cache', async (event, folderPath) => {
+  const removed = [];
+  const hashCache = path.join(folderPath, 'hash_cache.json');
+  if (fs.existsSync(hashCache)) {
+    try { fs.unlinkSync(hashCache); removed.push('hash_cache.json'); } catch (_) {}
+  }
+  const thumbDir = path.join(folderPath, '.cache', 'thumbnails');
+  if (fs.existsSync(thumbDir)) {
+    try { fs.rmSync(thumbDir, { recursive: true, force: true }); removed.push('.cache/thumbnails/'); } catch (_) {}
+  }
+  return removed;
+});
+
+// Read a thumbnail file as base64 from scan folder
+ipcMain.handle('read-thumbnail', async (event, folderPath, thumbRelPath) => {
+  try {
+    const fullPath = path.join(folderPath, thumbRelPath);
+    const buf = fs.readFileSync(fullPath);
+    return `data:image/jpeg;base64,${buf.toString('base64')}`;
+  } catch (_) {
+    return null;
+  }
 });

@@ -14,5 +14,9 @@ contextBridge.exposeInMainWorld('api', {
   saveTags: (folderPath, tagsMap) => ipcRenderer.invoke('save-tags', folderPath, tagsMap),
   loadTags: (folderPath) => ipcRenderer.invoke('load-tags', folderPath),
   moveTaggedFiles: (folderPath, relPaths, subfolder) => ipcRenderer.invoke('move-tagged-files', folderPath, relPaths, subfolder),
+  exportFiles: (folderPath, relPaths, subfolder, preserveStructure) => ipcRenderer.invoke('export-files', folderPath, relPaths, subfolder, preserveStructure),
+  clearCache: (folderPath) => ipcRenderer.invoke('clear-cache', folderPath),
+  readThumbnail: (folderPath, thumbRelPath) => ipcRenderer.invoke('read-thumbnail', folderPath, thumbRelPath),
   onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_, msg) => callback(msg)),
+  onScanProgressJson: (callback) => ipcRenderer.on('scan-progress-json', (_, data) => callback(data)),
 });

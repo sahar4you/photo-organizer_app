@@ -27,6 +27,9 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.3gp'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 THUMB_SIZE = (300, 300)
+THUMB_DISK_WIDTH = 200   # width for on-disk thumbnail cache
+CACHE_DIR = ".cache"
+THUMBS_DIR = os.path.join(CACHE_DIR, "thumbnails")
 
 # ---- EXIF ----
 def get_exif_data(filepath):
@@ -84,6 +87,36 @@ def make_thumbnail_b64(filepath):
         img.save(buf, format='JPEG', quality=60)
         return base64.b64encode(buf.getvalue()).decode()
     except: return ""
+
+def make_disk_thumbnail(filepath, folder, rel_path):
+    """Generate a 200px-wide JPEG thumbnail on disk under .cache/thumbnails/.
+    Returns the relative thumbnail path, or empty string on failure."""
+    if not HAS_PIL:
+        return ""
+    thumbs_dir = Path(folder) / THUMBS_DIR
+    thumb_rel = Path(rel_path).with_suffix('.jpg')
+    thumb_path = thumbs_dir / thumb_rel
+    # Skip if already cached
+    if thumb_path.exists():
+        try:
+            src_mtime = os.path.getmtime(filepath)
+            thumb_mtime = os.path.getmtime(thumb_path)
+            if thumb_mtime >= src_mtime:
+                return str(Path(THUMBS_DIR) / thumb_rel)
+        except OSError:
+            pass
+    try:
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.open(filepath)
+        ratio = THUMB_DISK_WIDTH / img.width if img.width > THUMB_DISK_WIDTH else 1
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        img.save(str(thumb_path), format='JPEG', quality=75)
+        return str(Path(THUMBS_DIR) / thumb_rel)
+    except Exception:
+        return ""
 
 # ---- Face Detection ----
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
@@ -191,8 +224,8 @@ def _collect_media_files(folder):
     folder = Path(folder)
     media_files = []
     for dirpath, dirnames, filenames in os.walk(folder):
-        # Skip __duplicates__ directory
-        dirnames[:] = [d for d in dirnames if d != DUPLICATES_DIR]
+        # Skip __duplicates__ and .cache directories
+        dirnames[:] = [d for d in dirnames if d not in (DUPLICATES_DIR, CACHE_DIR)]
         for name in filenames:
             ext = Path(name).suffix.lower()
             if ext in MEDIA_EXTENSIONS:
@@ -208,6 +241,11 @@ def scan_folder(folder):
     # Recursive traversal — collect all media files in tree
     all_media = _collect_media_files(folder)
     total_count = len(all_media)
+
+    # Warn if large library
+    if total_count > 3000:
+        print(f"Warning: {total_count} files found. Scanning may take a while.",
+              file=sys.stderr)
 
     face_cascade, profile_cascade = None, None
     all_face_data = []
@@ -251,7 +289,10 @@ def scan_folder(folder):
         if not date_taken: date_taken = mod_time
 
         thumb = ""
-        if not is_video: thumb = make_thumbnail_b64(str(filepath))
+        thumbnail_path = ""
+        if not is_video:
+            thumb = make_thumbnail_b64(str(filepath))
+            thumbnail_path = make_disk_thumbnail(str(filepath), str(folder), rel_path)
 
         face_count = 0
         if not is_video and face_cascade is not None:
@@ -282,6 +323,7 @@ def scan_folder(folder):
             "gps_lat": gps_lat,
             "gps_lon": gps_lon,
             "thumb": thumb,
+            "thumbnail_path": thumbnail_path,
             "faces": [],
             "face_count": face_count,
             "tags": [],
@@ -289,6 +331,9 @@ def scan_folder(folder):
         files.append(entry)
         pct = int((i+1)/total_count*100) if total_count else 100
         print(f"\rScanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}", end="", flush=True)
+        # Emit machine-readable progress for Electron
+        if (i + 1) % 10 == 0 or (i + 1) == total_count:
+            print(f'\n{{"progress":{pct},"current":{i+1},"total":{total_count}}}', flush=True)
 
     print(f"\rScanned {len(files)} media files.                    ", flush=True)
 
