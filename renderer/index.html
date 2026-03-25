@@ -184,6 +184,36 @@
   .no-dups { text-align:center; padding:60px 20px; color:var(--text2); }
   .no-dups .big-icon { font-size:48px; margin-bottom:12px; }
   .no-dups p { font-size:14px; }
+
+  /* Tags */
+  .tag-pill { display:inline-block; background:var(--accent); color:#000; font-size:9px; padding:1px 6px; border-radius:8px; margin:0 2px 1px 0; font-weight:600; }
+  .tag-pill.removable { cursor:pointer; }
+  .tag-pill .tag-x { margin-left:3px; font-weight:400; }
+
+  /* Multi-select mode */
+  .card.selectable { cursor:crosshair; }
+  .card.selected { outline:3px solid var(--accent); outline-offset:-3px; }
+  .card .select-check { position:absolute; top:6px; left:6px; width:22px; height:22px; border-radius:50%; background:rgba(0,0,0,0.5); border:2px solid #fff; display:none; align-items:center; justify-content:center; color:#fff; font-size:13px; z-index:2; }
+  .card.selectable .select-check { display:flex; }
+  .card.selected .select-check { background:var(--accent); color:#000; }
+
+  /* Tag bar (top of gallery in select mode) */
+  .tag-bar { display:none; padding:10px 24px; background:var(--surface); border-bottom:1px solid var(--border); align-items:center; gap:8px; flex-wrap:wrap; }
+  .tag-bar.open { display:flex; }
+  .tag-bar .tag-input { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:12px; outline:none; width:180px; }
+  .tag-bar .tag-input:focus { border-color:var(--accent); }
+  .tag-bar button { padding:6px 14px; border-radius:6px; font-size:12px; cursor:pointer; border:none; font-weight:600; }
+  .tag-bar .btn-tag-add { background:var(--accent); color:#000; }
+  .tag-bar .btn-tag-remove { background:var(--danger); color:#fff; }
+  .tag-bar .btn-tag-move { background:#ff9800; color:#000; }
+  .tag-bar .btn-tag-cancel { background:var(--card); color:var(--text); border:1px solid var(--border) !important; }
+  .tag-bar .sel-count { font-size:12px; color:var(--text2); }
+
+  /* Tag filter in sidebar */
+  .tag-filter-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .tag-filter-chip { background:var(--card); color:var(--text); font-size:10px; padding:2px 8px; border-radius:10px; cursor:pointer; border:1px solid var(--border); }
+  .tag-filter-chip:hover { border-color:var(--accent); }
+  .tag-filter-chip.active { background:var(--accent); color:#000; border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -241,6 +271,15 @@
       <div class="face-avatars" id="faceAvatars"></div>
       <button class="manage-btn" onclick="openFaceManager()">✏️ Rename / Merge Faces</button>
       <div class="filter-group">
+        <label>Tags</label>
+        <select id="filterTag">
+          <option value="">All Tags</option>
+          <option value="__has_tag__">Has Tags</option>
+          <option value="__no_tag__">No Tags</option>
+        </select>
+        <div class="tag-filter-chips" id="tagChips"></div>
+      </div>
+      <div class="filter-group">
         <label>Sort</label>
         <select id="sortBy">
           <option value="date_desc">Newest First</option>
@@ -261,6 +300,7 @@
     </div>
     <div class="sidebar-actions">
       <div class="stats" id="stats"></div>
+      <button class="reset-btn" onclick="toggleSelectMode()" id="btnSelectMode">Select Photos</button>
       <button class="reset-btn" onclick="resetFilters()">Reset Filters</button>
     </div>
   </aside>
@@ -275,6 +315,14 @@
     <div class="tab-bar" id="tabBar" style="display:none;">
       <button class="active" onclick="switchTab('gallery')">Gallery</button>
       <button onclick="switchTab('duplicates')">Duplicates <span class="dup-badge" id="dupBadge" style="display:none;">0</span></button>
+    </div>
+    <div class="tag-bar" id="tagBar">
+      <span class="sel-count" id="tagSelCount">0 selected</span>
+      <input type="text" class="tag-input" id="tagInput" placeholder="Enter tag..." onkeydown="if(event.key==='Enter')addTagToSelected()">
+      <button class="btn-tag-add" onclick="addTagToSelected()">+ Add Tag</button>
+      <button class="btn-tag-remove" onclick="removeTagFromSelected()">- Remove Tag</button>
+      <button class="btn-tag-move" onclick="moveTaggedToFolder()">Move to Folder</button>
+      <button class="btn-tag-cancel" onclick="exitSelectMode()">Done</button>
     </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
     <div class="dup-panel" id="dupPanel"></div>
@@ -337,6 +385,9 @@ let filtered = [];
 let currentLbIndex = -1;
 let gridSize = '';
 let activeTab = 'gallery';
+let TAGS_MAP = {};        // { rel_path: [tag1, tag2] }
+let selectMode = false;   // multi-select mode
+let SELECTED_PHOTOS = new Set(); // rel_paths of selected photos
 
 // ---- Folder picking & scanning ----
 async function pickFolder() {
@@ -373,6 +424,20 @@ async function scanCurrentFolder() {
     } catch (_) {
       IGNORED_GROUPS = new Set();
     }
+    // Load photo tags
+    try {
+      TAGS_MAP = await window.api.loadTags(currentFolder) || {};
+    } catch (_) {
+      TAGS_MAP = {};
+    }
+    // Apply tags from TAGS_MAP to DATA (in case scanner didn't have them)
+    DATA.forEach(f => {
+      if (f.rel_path && TAGS_MAP[f.rel_path]) {
+        f.tags = TAGS_MAP[f.rel_path];
+      }
+    });
+    SELECTED_PHOTOS = new Set();
+    selectMode = false;
 
     document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
     document.getElementById('folderName').title = currentFolder;
@@ -402,6 +467,7 @@ function populateFilters() {
   fillSelect('filterCamera', cameras);
   fillSelect('filterRes', resolutions);
   refreshFaceUI();
+  refreshTagUI();
 }
 
 function fillSelect(id, values) {
@@ -457,6 +523,7 @@ function applyFilters() {
   const camera = document.getElementById('filterCamera').value;
   const res = document.getElementById('filterRes').value;
   const face = document.getElementById('filterFace').value;
+  const tag = document.getElementById('filterTag').value;
   const sort = document.getElementById('sortBy').value;
 
   filtered = DATA.filter(f => {
@@ -469,6 +536,9 @@ function applyFilters() {
     if (face === '__has_face__' && (!f.faces || f.faces.length === 0)) return false;
     if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
     if (face && face !== '__has_face__' && face !== '__no_face__' && (!f.faces || !f.faces.includes(face))) return false;
+    if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
+    if (tag === '__no_tag__' && f.tags && f.tags.length > 0) return false;
+    if (tag && tag !== '__has_tag__' && tag !== '__no_tag__' && (!f.tags || !f.tags.includes(tag))) return false;
     return true;
   });
 
@@ -509,11 +579,18 @@ function render() {
       const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
       const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
       const faceNames = (f.faces && f.faces.length > 0) ? f.faces.join(', ') : '';
-      html += `<div class="card" onclick="openLightbox(${idx})">
+      const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
+      const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
+      const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
+      const checkMark = isSelected ? '✓' : '';
+      const clickAction = selectMode ? `togglePhotoSelect('${f.rel_path}')` : `openLightbox(${idx})`;
+      html += `<div class="${selClass}" onclick="${clickAction}">
+        <div class="select-check">${checkMark}</div>
         ${imgTag}${videoBadge}${faceBadge}
         <div class="info">
           <div class="name" title="${f.name}">${f.name}</div>
           <div class="meta">${f.size_mb} MB${faceNames ? ' · ' + faceNames : ''}</div>
+          ${tagPills ? '<div style="margin-top:2px;">' + tagPills + '</div>' : ''}
         </div>
       </div>`;
     });
@@ -656,7 +733,7 @@ function setGrid(size) {
 }
 
 function resetFilters() {
-  ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace'].forEach(id => {
+  ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('sortBy').value = 'date_desc';
@@ -664,10 +741,150 @@ function resetFilters() {
 }
 
 // Attach filter events
-['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','sortBy'].forEach(id => {
+['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','sortBy'].forEach(id => {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
+
+// ---- Tag System ----
+function refreshTagUI() {
+  const allTags = [...new Set(DATA.flatMap(f => f.tags || []))].sort();
+  // Update dropdown
+  const sel = document.getElementById('filterTag');
+  while (sel.options.length > 3) sel.remove(3);
+  allTags.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t; o.textContent = t;
+    sel.appendChild(o);
+  });
+  // Update chips
+  const chips = document.getElementById('tagChips');
+  chips.innerHTML = '';
+  allTags.forEach(t => {
+    const chip = document.createElement('span');
+    chip.className = 'tag-filter-chip';
+    chip.textContent = t;
+    chip.onclick = () => {
+      document.getElementById('filterTag').value = t;
+      applyFilters();
+    };
+    chips.appendChild(chip);
+  });
+}
+
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  SELECTED_PHOTOS = new Set();
+  const btn = document.getElementById('btnSelectMode');
+  const bar = document.getElementById('tagBar');
+  if (selectMode) {
+    btn.textContent = 'Cancel Selection';
+    bar.classList.add('open');
+  } else {
+    btn.textContent = 'Select Photos';
+    bar.classList.remove('open');
+  }
+  updateTagSelCount();
+  render();
+}
+
+function exitSelectMode() {
+  selectMode = false;
+  SELECTED_PHOTOS = new Set();
+  document.getElementById('btnSelectMode').textContent = 'Select Photos';
+  document.getElementById('tagBar').classList.remove('open');
+  render();
+}
+
+function togglePhotoSelect(relPath) {
+  if (SELECTED_PHOTOS.has(relPath)) SELECTED_PHOTOS.delete(relPath);
+  else SELECTED_PHOTOS.add(relPath);
+  updateTagSelCount();
+  render();
+}
+
+function updateTagSelCount() {
+  const el = document.getElementById('tagSelCount');
+  if (el) el.textContent = `${SELECTED_PHOTOS.size} selected`;
+}
+
+async function addTagToSelected() {
+  const input = document.getElementById('tagInput');
+  const tag = input.value.trim().toLowerCase();
+  if (!tag || SELECTED_PHOTOS.size === 0) return;
+
+  SELECTED_PHOTOS.forEach(rel => {
+    if (!TAGS_MAP[rel]) TAGS_MAP[rel] = [];
+    if (!TAGS_MAP[rel].includes(tag)) TAGS_MAP[rel].push(tag);
+    const f = DATA.find(d => d.rel_path === rel);
+    if (f) f.tags = [...TAGS_MAP[rel]];
+  });
+
+  input.value = '';
+  await persistTags();
+  refreshTagUI();
+  render();
+}
+
+async function removeTagFromSelected() {
+  const input = document.getElementById('tagInput');
+  const tag = input.value.trim().toLowerCase();
+  if (!tag || SELECTED_PHOTOS.size === 0) return;
+
+  SELECTED_PHOTOS.forEach(rel => {
+    if (TAGS_MAP[rel]) {
+      TAGS_MAP[rel] = TAGS_MAP[rel].filter(t => t !== tag);
+      if (TAGS_MAP[rel].length === 0) delete TAGS_MAP[rel];
+    }
+    const f = DATA.find(d => d.rel_path === rel);
+    if (f) f.tags = TAGS_MAP[rel] || [];
+  });
+
+  input.value = '';
+  await persistTags();
+  refreshTagUI();
+  render();
+}
+
+async function persistTags() {
+  if (!currentFolder) return;
+  try {
+    await window.api.saveTags(currentFolder, TAGS_MAP);
+  } catch (_) {}
+}
+
+function moveTaggedToFolder() {
+  if (SELECTED_PHOTOS.size === 0) { alert('No photos selected.'); return; }
+  const items = [...SELECTED_PHOTOS];
+  let listHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be moved.</p>`;
+  listHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Target subfolder name:</label>';
+  listHtml += '<input type="text" id="moveTargetFolder" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. favorites">';
+  listHtml += '<div class="preview-list" style="margin-top:8px;">';
+  items.slice(0, 20).forEach(rel => {
+    listHtml += `<div class="preview-item"><span class="from">${rel}</span></div>`;
+  });
+  if (items.length > 20) listHtml += `<div class="preview-item" style="color:var(--text2);">...and ${items.length - 20} more</div>`;
+  listHtml += '</div>';
+
+  openConfirm('Move Photos to Folder', listHtml, 'Move Files', 'btn-save', executeMoveTagged);
+}
+
+async function executeMoveTagged() {
+  const target = document.getElementById('moveTargetFolder').value.trim();
+  if (!target) { alert('Please enter a folder name.'); return; }
+  const items = [...SELECTED_PHOTOS];
+  document.getElementById('loadingOverlay').classList.add('open');
+  document.getElementById('progressText').textContent = 'Moving files...';
+  try {
+    const results = await window.api.moveTaggedFiles(currentFolder, items, target);
+    const moved = results.filter(r => r.status === 'moved').length;
+    await scanCurrentFolder();
+    alert(`Done! ${moved} file(s) moved to "${target}" folder.`);
+  } catch (err) {
+    alert('Move failed: ' + err.message);
+  }
+  document.getElementById('loadingOverlay').classList.remove('open');
+}
 
 // ---- Tab Switching ----
 function switchTab(tab) {

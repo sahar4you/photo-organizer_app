@@ -11,5 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   trashFiles: (filePaths) => ipcRenderer.invoke('trash-files', filePaths),
   saveIgnoredGroups: (folderPath, groups) => ipcRenderer.invoke('save-ignored-groups', folderPath, groups),
   loadIgnoredGroups: (folderPath) => ipcRenderer.invoke('load-ignored-groups', folderPath),
+  saveTags: (folderPath, tagsMap) => ipcRenderer.invoke('save-tags', folderPath, tagsMap),
+  loadTags: (folderPath) => ipcRenderer.invoke('load-tags', folderPath),
+  moveTaggedFiles: (folderPath, relPaths, subfolder) => ipcRenderer.invoke('move-tagged-files', folderPath, relPaths, subfolder),
   onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_, msg) => callback(msg)),
 });

@@ -195,6 +195,58 @@ ipcMain.handle('load-ignored-groups', async (event, folderPath) => {
   }
 });
 
+// Save photo tags to folder
+ipcMain.handle('save-tags', async (event, folderPath, tagsMap) => {
+  const filePath = path.join(folderPath, 'photo_tags.json');
+  fs.writeFileSync(filePath, JSON.stringify(tagsMap, null, 2), 'utf8');
+  return filePath;
+});
+
+// Load photo tags from folder
+ipcMain.handle('load-tags', async (event, folderPath) => {
+  const filePath = path.join(folderPath, 'photo_tags.json');
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return {};
+  }
+});
+
+// Move files by tag to a subfolder
+ipcMain.handle('move-tagged-files', async (event, folderPath, relPaths, targetSubfolder) => {
+  const results = [];
+  const targetDir = path.join(folderPath, targetSubfolder);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+  for (const rel of relPaths) {
+    const src = path.join(folderPath, rel);
+    const destDir = path.join(targetDir, path.dirname(rel));
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    let dest = path.join(destDir, path.basename(rel));
+    // Handle name collisions
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(rel);
+      const stem = path.basename(rel, ext);
+      let counter = 2;
+      while (fs.existsSync(dest)) {
+        dest = path.join(destDir, `${stem}_${counter}${ext}`);
+        counter++;
+      }
+    }
+    try {
+      fs.renameSync(src, dest);
+      results.push({ source: rel, destination: path.relative(folderPath, dest), status: 'moved' });
+    } catch (e) {
+      results.push({ source: rel, destination: '', status: 'error', message: e.message });
+    }
+  }
+  return results;
+});
+
 function getScriptPath() {
   // In dev: same directory; in packaged: extraResources
   const devPath = path.join(__dirname, 'python_scanner', 'scanner.py');
