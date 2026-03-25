@@ -64,13 +64,29 @@
   /* Cards */
   .card { background:var(--card); border-radius:8px; overflow:hidden; cursor:pointer; transition:transform 0.12s, box-shadow 0.12s; position:relative; }
   .card:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,0.4); }
-  .card img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:var(--surface); }
+  .card img.card-thumb { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:var(--surface); }
   .card .badge { position:absolute; top:6px; padding:2px 7px; border-radius:4px; font-size:10px; background:rgba(0,0,0,0.7); color:#fff; }
   .card .badge-video { right:6px; }
   .card .badge-face { left:6px; }
   .card .info { padding:6px 8px; }
+  .card .info .card-footer { display:flex; justify-content:space-between; align-items:baseline; }
+  .card .info .card-left { font-size:10px; color:var(--text2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .card .info .card-left .folder-name { color:var(--accent); font-weight:500; }
+  .card .info .card-right { font-size:10px; color:var(--text2); white-space:nowrap; flex-shrink:0; margin-left:6px; }
   .card .info .name { font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .card .info .meta { font-size:10px; color:var(--text2); margin-top:1px; }
+
+  /* List view */
+  .grid.list-view { display:flex; flex-direction:column; gap:4px; }
+  .grid.list-view .card { display:flex; flex-direction:row; border-radius:6px; }
+  .grid.list-view .card img.card-thumb { width:60px; height:60px; aspect-ratio:1; flex-shrink:0; border-radius:6px 0 0 6px; }
+  .grid.list-view .card .placeholder-img { width:60px; height:60px; font-size:20px; flex-shrink:0; }
+  .grid.list-view .card .info { flex:1; display:flex; flex-direction:column; justify-content:center; min-width:0; }
+  .grid.list-view .card .badge { display:none; }
+  .grid.list-view .card .select-check { top:50%; left:4px; transform:translateY(-50%); }
+
+  /* Progress bar */
+  .progress-bar-track { width:260px; height:6px; background:var(--border); border-radius:3px; margin-top:12px; overflow:hidden; }
+  .progress-bar-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s; width:0%; }
 
   /* Welcome screen */
   .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; color:var(--text2); }
@@ -290,8 +306,9 @@
         </select>
       </div>
       <div class="filter-group">
-        <label>Grid Size</label>
+        <label>View</label>
         <div class="view-toggle">
+          <button onclick="setGrid('list-view')" id="vList">List</button>
           <button onclick="setGrid('small')" id="vSmall">S</button>
           <button onclick="setGrid('')" id="vMed" class="active">M</button>
           <button onclick="setGrid('large')" id="vLarge">L</button>
@@ -302,6 +319,7 @@
       <div class="stats" id="stats"></div>
       <button class="reset-btn" onclick="toggleSelectMode()" id="btnSelectMode">Select Photos</button>
       <button class="reset-btn" onclick="resetFilters()">Reset Filters</button>
+      <button class="reset-btn" onclick="clearCache()" style="color:var(--danger);border-color:var(--danger);">Clear Cache</button>
     </div>
   </aside>
 
@@ -322,6 +340,7 @@
       <button class="btn-tag-add" onclick="addTagToSelected()">+ Add Tag</button>
       <button class="btn-tag-remove" onclick="removeTagFromSelected()">- Remove Tag</button>
       <button class="btn-tag-move" onclick="moveTaggedToFolder()">Move to Folder</button>
+      <button class="btn-tag-add" onclick="exportSelected()">Export</button>
       <button class="btn-tag-cancel" onclick="exitSelectMode()">Done</button>
     </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
@@ -333,6 +352,9 @@
 <div class="loading" id="loadingOverlay">
   <div class="spinner"></div>
   <div class="progress-text" id="progressText">Scanning photos...</div>
+  <div class="progress-bar-track" id="progressBarTrack" style="display:none;">
+    <div class="progress-bar-fill" id="progressBarFill"></div>
+  </div>
 </div>
 
 <!-- Face Manager Modal -->
@@ -405,9 +427,18 @@ async function rescan() {
 async function scanCurrentFolder() {
   document.getElementById('loadingOverlay').classList.add('open');
   document.getElementById('progressText').textContent = 'Scanning photos...';
+  document.getElementById('progressBarTrack').style.display = 'block';
+  document.getElementById('progressBarFill').style.width = '0%';
 
   window.api.onScanProgress((msg) => {
     document.getElementById('progressText').textContent = msg;
+  });
+  window.api.onScanProgressJson((data) => {
+    if (data && data.progress !== undefined) {
+      document.getElementById('progressBarFill').style.width = data.progress + '%';
+      document.getElementById('progressText').textContent =
+        `Scanning: ${data.progress}% (${data.current}/${data.total})`;
+    }
   });
 
   try {
@@ -455,6 +486,7 @@ async function scanCurrentFolder() {
     alert('Scan failed: ' + err.message);
   }
   document.getElementById('loadingOverlay').classList.remove('open');
+  document.getElementById('progressBarTrack').style.display = 'none';
 }
 
 // ---- Filters ----
@@ -554,6 +586,18 @@ function applyFilters() {
   render();
 }
 
+function getFolderFromRel(relPath) {
+  const parts = relPath.split('/');
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+}
+
+function formatDate(dateStr) {
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+  } catch (_) { return dateStr; }
+}
+
 function render() {
   const gallery = document.getElementById('gallery');
   document.getElementById('stats').textContent = `${filtered.length} of ${DATA.length} files`;
@@ -571,25 +615,40 @@ function render() {
     html += `<div class="date-group"><h2>${day} — ${groups[day].length} files</h2><div class="grid ${gridSize}">`;
     groups[day].forEach(f => {
       const idx = filtered.indexOf(f);
-      const thumbSrc = f.thumb ? `data:image/jpeg;base64,${f.thumb}` : '';
-      const placeholder = f.type === 'video'
-        ? '<div class="placeholder-img">🎬</div>'
-        : '<div class="placeholder-img">🖼</div>';
-      const imgTag = thumbSrc ? `<img src="${thumbSrc}" alt="${f.name}" loading="lazy">` : placeholder;
+      // Thumbnail: prefer disk thumbnail_path, fallback to base64 thumb, then placeholder
+      const hasDiskThumb = f.thumbnail_path && currentFolder;
+      const hasB64Thumb = f.thumb;
+      let imgTag;
+      if (hasDiskThumb) {
+        // Lazy-loaded via IntersectionObserver
+        imgTag = `<img class="card-thumb lazy-thumb" data-folder="${currentFolder}" data-thumb="${f.thumbnail_path}" alt="${f.name}" src="">`;
+      } else if (hasB64Thumb) {
+        imgTag = `<img class="card-thumb" src="data:image/jpeg;base64,${f.thumb}" alt="${f.name}" loading="lazy">`;
+      } else {
+        imgTag = f.type === 'video'
+          ? '<div class="placeholder-img">🎬</div>'
+          : '<div class="placeholder-img">🖼</div>';
+      }
       const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
       const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
-      const faceNames = (f.faces && f.faces.length > 0) ? f.faces.join(', ') : '';
       const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
       const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
       const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
       const checkMark = isSelected ? '✓' : '';
-      const clickAction = selectMode ? `togglePhotoSelect('${f.rel_path}')` : `openLightbox(${idx})`;
+      const clickAction = selectMode
+        ? `togglePhotoSelect('${f.rel_path.replace(/'/g, "\\'")}')`
+        : `openLightbox(${idx})`;
+      const folderName = getFolderFromRel(f.rel_path);
+      const shortDate = formatDate(f.date);
       html += `<div class="${selClass}" onclick="${clickAction}">
         <div class="select-check">${checkMark}</div>
         ${imgTag}${videoBadge}${faceBadge}
         <div class="info">
-          <div class="name" title="${f.name}">${f.name}</div>
-          <div class="meta">${f.size_mb} MB${faceNames ? ' · ' + faceNames : ''}</div>
+          <div class="name" title="${f.rel_path}">${f.name}</div>
+          <div class="card-footer">
+            <span class="card-left">${folderName ? '<span class="folder-name">' + folderName + '</span> · ' : ''}${shortDate}</span>
+            <span class="card-right">${f.size_mb} MB</span>
+          </div>
           ${tagPills ? '<div style="margin-top:2px;">' + tagPills + '</div>' : ''}
         </div>
       </div>`;
@@ -597,6 +656,31 @@ function render() {
     html += '</div></div>';
   });
   gallery.innerHTML = html;
+  initLazyThumbs();
+}
+
+// Lazy-load disk thumbnails via IntersectionObserver
+let thumbObserver = null;
+function initLazyThumbs() {
+  if (thumbObserver) thumbObserver.disconnect();
+  const imgs = document.querySelectorAll('.lazy-thumb');
+  if (imgs.length === 0) return;
+  thumbObserver = new IntersectionObserver((entries) => {
+    entries.forEach(async (entry) => {
+      if (!entry.isIntersecting) return;
+      const img = entry.target;
+      const folder = img.dataset.folder;
+      const thumbPath = img.dataset.thumb;
+      if (!folder || !thumbPath) return;
+      thumbObserver.unobserve(img);
+      try {
+        const dataUrl = await window.api.readThumbnail(folder, thumbPath);
+        if (dataUrl) img.src = dataUrl;
+        else img.src = '';
+      } catch (_) {}
+    });
+  }, { rootMargin: '200px' });
+  imgs.forEach(img => thumbObserver.observe(img));
 }
 
 // ---- Lightbox ----
@@ -726,7 +810,8 @@ async function saveFaceNames() {
 function setGrid(size) {
   gridSize = size;
   document.querySelectorAll('.view-toggle button').forEach(b => b.classList.remove('active'));
-  if (size === 'small') document.getElementById('vSmall').classList.add('active');
+  if (size === 'list-view') document.getElementById('vList').classList.add('active');
+  else if (size === 'small') document.getElementById('vSmall').classList.add('active');
   else if (size === 'large') document.getElementById('vLarge').classList.add('active');
   else document.getElementById('vMed').classList.add('active');
   render();
@@ -884,6 +969,50 @@ async function executeMoveTagged() {
     alert('Move failed: ' + err.message);
   }
   document.getElementById('loadingOverlay').classList.remove('open');
+}
+
+// ---- Export Selected ----
+function exportSelected() {
+  if (SELECTED_PHOTOS.size === 0) { alert('No photos selected.'); return; }
+  const items = [...SELECTED_PHOTOS];
+  let bodyHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be copied.</p>`;
+  bodyHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Export folder name:</label>';
+  bodyHtml += '<input type="text" id="exportFolderName" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. vacation-picks">';
+  bodyHtml += '<label style="font-size:11px;display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--text2);cursor:pointer;">';
+  bodyHtml += '<input type="checkbox" id="exportPreserveStructure" checked> Preserve folder structure';
+  bodyHtml += '</label>';
+  bodyHtml += `<p style="font-size:10px;color:var(--text2);margin-top:6px;">Files will be copied to: <b>Exported/&lt;name&gt;/</b></p>`;
+
+  openConfirm('Export Photos', bodyHtml, 'Export', 'btn-save', executeExport);
+}
+
+async function executeExport() {
+  const name = document.getElementById('exportFolderName').value.trim();
+  if (!name) { alert('Please enter a folder name.'); return; }
+  const preserve = document.getElementById('exportPreserveStructure').checked;
+  const items = [...SELECTED_PHOTOS];
+  document.getElementById('loadingOverlay').classList.add('open');
+  document.getElementById('progressText').textContent = 'Exporting files...';
+  try {
+    const result = await window.api.exportFiles(currentFolder, items, name, preserve);
+    const exported = result.results.filter(r => r.status === 'exported').length;
+    alert(`Done! ${exported} file(s) exported to:\nExported/${name}/`);
+  } catch (err) {
+    alert('Export failed: ' + err.message);
+  }
+  document.getElementById('loadingOverlay').classList.remove('open');
+}
+
+// ---- Clear Cache ----
+async function clearCache() {
+  if (!currentFolder) return;
+  if (!confirm('This will delete hash_cache.json and all cached thumbnails.\nContinue?')) return;
+  try {
+    const removed = await window.api.clearCache(currentFolder);
+    alert('Cache cleared: ' + (removed.length > 0 ? removed.join(', ') : 'nothing to clear'));
+  } catch (err) {
+    alert('Failed to clear cache: ' + err.message);
+  }
 }
 
 // ---- Tab Switching ----
