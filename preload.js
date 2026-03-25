@@ -7,5 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   saveFaceNames: (folderPath, nameMap) => ipcRenderer.invoke('save-face-names', folderPath, nameMap),
   loadFaceNames: (folderPath) => ipcRenderer.invoke('load-face-names', folderPath),
   readImage: (filePath) => ipcRenderer.invoke('read-image', filePath),
+  moveDuplicates: (folderPath) => ipcRenderer.invoke('move-duplicates', folderPath),
+  deleteFiles: (filePaths) => ipcRenderer.invoke('delete-files', filePaths),
   onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_, msg) => callback(msg)),
 });

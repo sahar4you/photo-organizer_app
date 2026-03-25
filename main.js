@@ -121,6 +121,62 @@ ipcMain.handle('read-image', async (event, filePath) => {
   }
 });
 
+// Move duplicates — re-runs Python scanner with --move-duplicates flag
+ipcMain.handle('move-duplicates', async (event, folderPath) => {
+  return new Promise((resolve, reject) => {
+    const scriptPath = getScriptPath();
+    const proc = spawn('python3', [scriptPath, folderPath, '--json', '--move-duplicates'], {
+      cwd: folderPath,
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+      const lines = data.toString().split('\n');
+      lines.forEach((line) => {
+        if (line.includes('Scanning:') || line.includes('Detecting') || line.includes('Moving')) {
+          mainWindow.webContents.send('scan-progress', line.trim());
+        }
+      });
+    });
+
+    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Scanner exited with code ${code}: ${stderr}`));
+        return;
+      }
+      try {
+        const jsonMatch = stdout.match(/\{[\s\S]*\}(?=[^}]*$)/);
+        if (jsonMatch) {
+          resolve(JSON.parse(jsonMatch[0]));
+        } else {
+          reject(new Error('No JSON output from scanner'));
+        }
+      } catch (e) {
+        reject(new Error(`JSON parse error: ${e.message}`));
+      }
+    });
+  });
+});
+
+// Delete duplicate files permanently
+ipcMain.handle('delete-files', async (event, filePaths) => {
+  const results = [];
+  for (const fp of filePaths) {
+    try {
+      fs.unlinkSync(fp);
+      results.push({ path: fp, status: 'deleted' });
+    } catch (e) {
+      results.push({ path: fp, status: 'error', message: e.message });
+    }
+  }
+  return results;
+});
+
 function getScriptPath() {
   // In dev: same directory; in packaged: extraResources
   const devPath = path.join(__dirname, 'python_scanner', 'scanner.py');
