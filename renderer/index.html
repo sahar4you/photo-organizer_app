@@ -114,6 +114,68 @@
 
   .no-results { text-align:center; padding:50px; color:var(--text2); font-size:14px; }
   .placeholder-img { width:100%; aspect-ratio:1; background:var(--surface); display:flex; align-items:center; justify-content:center; font-size:36px; }
+
+  /* Tabs */
+  .tab-bar { display:flex; border-bottom:1px solid var(--border); background:var(--surface); }
+  .tab-bar button { background:none; border:none; color:var(--text2); padding:10px 20px; font-size:13px; cursor:pointer; border-bottom:2px solid transparent; transition:all 0.2s; }
+  .tab-bar button:hover { color:var(--text); background:var(--hover); }
+  .tab-bar button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+  .tab-bar .dup-badge { background:var(--danger); color:#fff; font-size:10px; padding:1px 6px; border-radius:8px; margin-left:6px; }
+
+  /* Duplicates panel */
+  .dup-panel { padding:20px 24px; display:none; }
+  .dup-panel.open { display:block; }
+  .dup-summary { display:flex; gap:16px; margin-bottom:20px; flex-wrap:wrap; }
+  .dup-stat-card { background:var(--card); border-radius:8px; padding:14px 20px; min-width:140px; }
+  .dup-stat-card .num { font-size:24px; font-weight:700; color:var(--accent); }
+  .dup-stat-card .label { font-size:11px; color:var(--text2); margin-top:2px; }
+  .dup-section { margin-bottom:24px; }
+  .dup-section h3 { font-size:14px; color:var(--accent); margin-bottom:12px; font-weight:500; }
+  .dup-group { background:var(--card); border-radius:8px; margin-bottom:12px; overflow:hidden; border:1px solid var(--border); }
+  .dup-group-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border); cursor:pointer; }
+  .dup-group-header:hover { background:var(--hover); }
+  .dup-group-header .group-title { font-size:12px; font-weight:600; }
+  .dup-group-header .group-meta { font-size:11px; color:var(--text2); }
+  .dup-group-body { padding:8px; }
+  .dup-row { display:flex; align-items:center; gap:10px; padding:8px; border-radius:6px; transition:background 0.15s; }
+  .dup-row:hover { background:var(--hover); }
+  .dup-row input[type=checkbox] { width:16px; height:16px; cursor:pointer; accent-color:var(--accent); flex-shrink:0; }
+  .dup-row .dup-thumb { width:50px; height:50px; border-radius:4px; object-fit:cover; background:var(--surface); flex-shrink:0; }
+  .dup-row .dup-info { flex:1; min-width:0; }
+  .dup-row .dup-name { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dup-row .dup-meta { font-size:10px; color:var(--text2); margin-top:1px; }
+  .dup-row .keeper-badge { background:var(--accent2); color:#000; font-size:9px; padding:2px 6px; border-radius:4px; font-weight:600; flex-shrink:0; }
+  .dup-row .set-keeper-btn { background:none; border:1px solid var(--border); color:var(--text2); font-size:9px; padding:2px 6px; border-radius:4px; cursor:pointer; flex-shrink:0; }
+  .dup-row .set-keeper-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .dup-row.is-keeper { background:rgba(129,199,132,0.08); }
+  .dup-row .distance-badge { font-size:9px; color:var(--text2); background:var(--surface); padding:1px 5px; border-radius:3px; flex-shrink:0; }
+
+  /* Duplicate action bar */
+  .dup-actions { display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+  .dup-actions button { padding:8px 16px; border-radius:6px; font-size:12px; cursor:pointer; border:none; font-weight:600; }
+  .dup-actions .btn-move { background:#ff9800; color:#000; }
+  .dup-actions .btn-move:hover { opacity:0.85; }
+  .dup-actions .btn-delete { background:var(--danger); color:#fff; }
+  .dup-actions .btn-delete:hover { opacity:0.85; }
+  .dup-actions .btn-select { background:var(--card); color:var(--text); border:1px solid var(--border) !important; }
+  .dup-actions .btn-select:hover { border-color:var(--accent) !important; }
+  .dup-actions .selection-count { font-size:12px; color:var(--text2); }
+
+  /* Confirm modal */
+  .confirm-overlay { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); z-index:460; justify-content:center; align-items:center; }
+  .confirm-overlay.open { display:flex; }
+  .confirm-modal { background:var(--surface); border-radius:12px; padding:24px; width:480px; max-width:92vw; }
+  .confirm-modal h3 { font-size:15px; margin-bottom:12px; }
+  .confirm-modal .preview-list { max-height:240px; overflow-y:auto; margin:12px 0; font-size:12px; }
+  .confirm-modal .preview-item { padding:4px 0; border-bottom:1px solid var(--border); color:var(--text2); }
+  .confirm-modal .preview-item .from { color:var(--text); }
+  .confirm-modal .preview-item .to { color:var(--accent2); }
+  .confirm-modal .confirm-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .confirm-modal .confirm-actions button { padding:8px 18px; border-radius:6px; font-size:12px; cursor:pointer; border:none; font-weight:600; }
+  .confirm-warn { color:var(--danger); font-size:11px; margin-top:8px; line-height:1.5; }
+  .no-dups { text-align:center; padding:60px 20px; color:var(--text2); }
+  .no-dups .big-icon { font-size:48px; margin-bottom:12px; }
+  .no-dups p { font-size:14px; }
 </style>
 </head>
 <body>
@@ -202,7 +264,12 @@
       <p>Select a folder to scan and organize your photos with<br>date, face, camera, and size filters.</p>
       <button class="big-btn" onclick="pickFolder()">Open Photo Folder</button>
     </div>
+    <div class="tab-bar" id="tabBar" style="display:none;">
+      <button class="active" onclick="switchTab('gallery')">Gallery</button>
+      <button onclick="switchTab('duplicates')">Duplicates <span class="dup-badge" id="dupBadge" style="display:none;">0</span></button>
+    </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
+    <div class="dup-panel" id="dupPanel"></div>
   </main>
 </div>
 
@@ -237,13 +304,30 @@
   </div>
 </div>
 
+<!-- Confirm Action Modal -->
+<div class="confirm-overlay" id="confirmModal">
+  <div class="confirm-modal">
+    <h3 id="confirmTitle">Confirm Action</h3>
+    <div id="confirmBody"></div>
+    <div class="confirm-actions">
+      <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
+      <button class="btn-save" id="confirmOkBtn" onclick="confirmAction()">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let DATA = [];
 let PERSON_THUMBS = {};
+let DUP_GROUPS = null;  // { exact: [], near: [] }
+let DUP_SELECTED = new Set(); // rel_paths selected for action
+let DUP_KEEPERS = {};  // groupKey -> rel_path (manual keeper overrides)
+let pendingConfirmFn = null;
 let currentFolder = null;
 let filtered = [];
 let currentLbIndex = -1;
 let gridSize = '';
+let activeTab = 'gallery';
 
 // ---- Folder picking & scanning ----
 async function pickFolder() {
@@ -270,16 +354,22 @@ async function scanCurrentFolder() {
     const result = await window.api.scanFolder(currentFolder);
     DATA = result.files || [];
     PERSON_THUMBS = result.person_thumbs || {};
+    DUP_GROUPS = result.duplicate_groups || null;
+    DUP_SELECTED = new Set();
+    DUP_KEEPERS = {};
 
     document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
     document.getElementById('folderName').title = currentFolder;
     document.getElementById('btnRescan').style.display = 'block';
     document.getElementById('filtersPanel').style.display = '';
     document.getElementById('welcomeScreen').style.display = 'none';
+    document.getElementById('tabBar').style.display = 'flex';
     document.getElementById('gallery').style.display = '';
 
     populateFilters();
     applyFilters();
+    updateDupBadge();
+    if (activeTab === 'duplicates') renderDuplicates();
   } catch (err) {
     alert('Scan failed: ' + err.message);
   }
@@ -562,6 +652,304 @@ function resetFilters() {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
+
+// ---- Tab Switching ----
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  const buttons = document.querySelectorAll('.tab-bar button');
+  if (tab === 'gallery') {
+    buttons[0].classList.add('active');
+    document.getElementById('gallery').style.display = '';
+    document.getElementById('dupPanel').classList.remove('open');
+  } else {
+    buttons[1].classList.add('active');
+    document.getElementById('gallery').style.display = 'none';
+    document.getElementById('dupPanel').classList.add('open');
+    renderDuplicates();
+  }
+}
+
+function updateDupBadge() {
+  const badge = document.getElementById('dupBadge');
+  if (!DUP_GROUPS) { badge.style.display = 'none'; return; }
+  const total = (DUP_GROUPS.exact || []).length + (DUP_GROUPS.near || []).length;
+  if (total > 0) {
+    badge.textContent = total;
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// ---- Duplicates Rendering ----
+function getFileByRel(relPath) {
+  return DATA.find(f => f.rel_path === relPath);
+}
+
+function renderDuplicates() {
+  const panel = document.getElementById('dupPanel');
+  if (!DUP_GROUPS) {
+    panel.innerHTML = '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates detected.<br>Scan a folder to check for duplicates.</p></div>';
+    return;
+  }
+
+  const exact = DUP_GROUPS.exact || [];
+  const near = DUP_GROUPS.near || [];
+  const totalGroups = exact.length + near.length;
+  const totalDups = exact.reduce((s, g) => s + g.duplicates.length, 0)
+                  + near.reduce((s, g) => s + g.duplicates.length, 0);
+
+  if (totalGroups === 0) {
+    panel.innerHTML = '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates found in your photo library.</p></div>';
+    return;
+  }
+
+  let html = '';
+
+  // Summary cards
+  html += '<div class="dup-summary">';
+  html += `<div class="dup-stat-card"><div class="num">${exact.length}</div><div class="label">Exact Duplicate Groups</div></div>`;
+  html += `<div class="dup-stat-card"><div class="num">${near.length}</div><div class="label">Near Duplicate Groups</div></div>`;
+  html += `<div class="dup-stat-card"><div class="num">${totalDups}</div><div class="label">Total Duplicates</div></div>`;
+  html += '</div>';
+
+  // Action bar
+  html += '<div class="dup-actions">';
+  html += '<button class="btn-select" onclick="selectAllDups()">Select All Duplicates</button>';
+  html += '<button class="btn-select" onclick="deselectAllDups()">Deselect All</button>';
+  html += '<button class="btn-move" onclick="previewMoveDups()">Move Selected</button>';
+  html += '<button class="btn-delete" onclick="previewDeleteDups()">Delete Selected</button>';
+  html += `<span class="selection-count" id="selectionCount">${DUP_SELECTED.size} selected</span>`;
+  html += '</div>';
+
+  // Exact groups
+  if (exact.length > 0) {
+    html += '<div class="dup-section"><h3>Exact Duplicates (identical files)</h3>';
+    exact.forEach((group, gi) => {
+      const gKey = `exact_${gi}`;
+      const keeper = DUP_KEEPERS[gKey] || group.keep;
+      const allFiles = [keeper, ...group.duplicates.filter(d => d !== keeper)];
+      // Re-add keeper if it was in duplicates due to override
+      const uniqueFiles = [...new Set([keeper, ...group.duplicates])];
+      if (!uniqueFiles.includes(group.keep) && group.keep !== keeper) {
+        uniqueFiles.push(group.keep);
+      }
+
+      html += `<div class="dup-group">`;
+      html += `<div class="dup-group-header" onclick="toggleGroup('${gKey}')">`;
+      html += `<span class="group-title">Group ${gi + 1} — ${uniqueFiles.length} files</span>`;
+      html += `<span class="group-meta">${group.hash}</span>`;
+      html += '</div>';
+      html += `<div class="dup-group-body" id="group_${gKey}">`;
+
+      uniqueFiles.forEach(rel => {
+        const f = getFileByRel(rel);
+        const isKeeper = rel === keeper;
+        html += renderDupRow(rel, f, isKeeper, gKey, null);
+      });
+
+      html += '</div></div>';
+    });
+    html += '</div>';
+  }
+
+  // Near groups
+  if (near.length > 0) {
+    html += '<div class="dup-section"><h3>Near Duplicates (visually similar)</h3>';
+    near.forEach((group, gi) => {
+      const gKey = `near_${gi}`;
+      const keeper = DUP_KEEPERS[gKey] || group.keep;
+      const members = group.members || [];
+
+      html += `<div class="dup-group">`;
+      html += `<div class="dup-group-header" onclick="toggleGroup('${gKey}')">`;
+      html += `<span class="group-title">Group ${gi + 1} — ${members.length} files</span>`;
+      html += `<span class="group-meta">pHash similarity</span>`;
+      html += '</div>';
+      html += `<div class="dup-group-body" id="group_${gKey}">`;
+
+      members.forEach(m => {
+        const f = getFileByRel(m.rel_path);
+        const isKeeper = m.rel_path === keeper;
+        html += renderDupRow(m.rel_path, f, isKeeper, gKey, m.distance);
+      });
+
+      html += '</div></div>';
+    });
+    html += '</div>';
+  }
+
+  panel.innerHTML = html;
+}
+
+function renderDupRow(relPath, fileData, isKeeper, groupKey, distance) {
+  const thumbSrc = fileData && fileData.thumb ? `data:image/jpeg;base64,${fileData.thumb}` : '';
+  const thumbTag = thumbSrc
+    ? `<img class="dup-thumb" src="${thumbSrc}">`
+    : `<div class="dup-thumb" style="display:flex;align-items:center;justify-content:center;font-size:18px;">🖼</div>`;
+  const sizeMb = fileData ? fileData.size_mb : '?';
+  const date = fileData ? fileData.date : '';
+  const checked = DUP_SELECTED.has(relPath) ? 'checked' : '';
+  const rowClass = isKeeper ? 'dup-row is-keeper' : 'dup-row';
+  const distBadge = distance !== null && distance !== undefined
+    ? `<span class="distance-badge">d=${distance}</span>` : '';
+
+  let keeperHtml;
+  if (isKeeper) {
+    keeperHtml = '<span class="keeper-badge">KEEP</span>';
+  } else {
+    keeperHtml = `<button class="set-keeper-btn" onclick="setKeeper('${groupKey}','${relPath}')">Set as keeper</button>`;
+  }
+
+  return `<div class="${rowClass}">
+    <input type="checkbox" ${isKeeper ? 'disabled' : ''} ${checked}
+      onchange="toggleDupSelect('${relPath}', this.checked)">
+    ${thumbTag}
+    <div class="dup-info">
+      <div class="dup-name" title="${relPath}">${relPath}</div>
+      <div class="dup-meta">${sizeMb} MB · ${date}</div>
+    </div>
+    ${distBadge}
+    ${keeperHtml}
+  </div>`;
+}
+
+function toggleGroup(gKey) {
+  const body = document.getElementById('group_' + gKey);
+  if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
+}
+
+// ---- Selection ----
+function toggleDupSelect(relPath, checked) {
+  if (checked) DUP_SELECTED.add(relPath);
+  else DUP_SELECTED.delete(relPath);
+  updateSelectionCount();
+}
+
+function selectAllDups() {
+  if (!DUP_GROUPS) return;
+  DUP_SELECTED = new Set();
+  const addDups = (groups, prefix) => {
+    groups.forEach((g, i) => {
+      const gKey = `${prefix}_${i}`;
+      const keeper = DUP_KEEPERS[gKey] || g.keep;
+      (g.duplicates || []).forEach(d => { if (d !== keeper) DUP_SELECTED.add(d); });
+      // For near groups, also check members not in duplicates list that aren't keeper
+      if (g.members) {
+        g.members.forEach(m => { if (m.rel_path !== keeper) DUP_SELECTED.add(m.rel_path); });
+      }
+    });
+  };
+  addDups(DUP_GROUPS.exact || [], 'exact');
+  addDups(DUP_GROUPS.near || [], 'near');
+  renderDuplicates();
+}
+
+function deselectAllDups() {
+  DUP_SELECTED = new Set();
+  renderDuplicates();
+}
+
+function updateSelectionCount() {
+  const el = document.getElementById('selectionCount');
+  if (el) el.textContent = `${DUP_SELECTED.size} selected`;
+}
+
+// ---- Keeper Override ----
+function setKeeper(groupKey, relPath) {
+  DUP_KEEPERS[groupKey] = relPath;
+  // Remove new keeper from selection, add old keeper's duplicates
+  DUP_SELECTED.delete(relPath);
+  renderDuplicates();
+}
+
+// ---- Confirm Modal ----
+function openConfirm(title, bodyHtml, okLabel, okClass, fn) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmBody').innerHTML = bodyHtml;
+  const okBtn = document.getElementById('confirmOkBtn');
+  okBtn.textContent = okLabel;
+  okBtn.className = okClass;
+  pendingConfirmFn = fn;
+  document.getElementById('confirmModal').classList.add('open');
+}
+
+function closeConfirm() {
+  document.getElementById('confirmModal').classList.remove('open');
+  pendingConfirmFn = null;
+}
+
+function confirmAction() {
+  if (pendingConfirmFn) pendingConfirmFn();
+  closeConfirm();
+}
+
+// ---- Move Duplicates (dry_run preview then actual move) ----
+function previewMoveDups() {
+  if (DUP_SELECTED.size === 0) { alert('No duplicates selected.'); return; }
+  const items = [...DUP_SELECTED];
+  let listHtml = '<div class="preview-list">';
+  items.forEach(rel => {
+    listHtml += `<div class="preview-item"><span class="from">${rel}</span> → <span class="to">__duplicates__/${rel}</span></div>`;
+  });
+  listHtml += '</div>';
+  listHtml += `<p style="font-size:12px;margin-top:8px;">${items.length} file(s) will be moved to the <b>__duplicates__</b> folder.</p>`;
+
+  openConfirm('Move Duplicates', listHtml, 'Move Files', 'btn-save', executeMoveDups);
+}
+
+async function executeMoveDups() {
+  document.getElementById('loadingOverlay').classList.add('open');
+  document.getElementById('progressText').textContent = 'Moving duplicates...';
+  try {
+    const result = await window.api.moveDuplicates(currentFolder);
+    DATA = result.files || [];
+    PERSON_THUMBS = result.person_thumbs || {};
+    DUP_GROUPS = result.duplicate_groups || null;
+    DUP_SELECTED = new Set();
+    DUP_KEEPERS = {};
+    populateFilters();
+    applyFilters();
+    updateDupBadge();
+    renderDuplicates();
+    const moved = (result.duplicate_moved || []).filter(m => m.status === 'moved').length;
+    alert(`Done! ${moved} file(s) moved to __duplicates__ folder.`);
+  } catch (err) {
+    alert('Move failed: ' + err.message);
+  }
+  document.getElementById('loadingOverlay').classList.remove('open');
+}
+
+// ---- Delete Duplicates ----
+function previewDeleteDups() {
+  if (DUP_SELECTED.size === 0) { alert('No duplicates selected.'); return; }
+  const items = [...DUP_SELECTED];
+  let listHtml = '<div class="preview-list">';
+  items.forEach(rel => {
+    listHtml += `<div class="preview-item"><span class="from">${rel}</span></div>`;
+  });
+  listHtml += '</div>';
+  listHtml += `<div class="confirm-warn">WARNING: ${items.length} file(s) will be permanently deleted. This cannot be undone.</div>`;
+
+  openConfirm('Delete Duplicates', listHtml, 'Delete Permanently', 'btn-save', executeDeleteDups);
+}
+
+async function executeDeleteDups() {
+  const paths = [...DUP_SELECTED].map(rel => currentFolder + '/' + rel);
+  document.getElementById('loadingOverlay').classList.add('open');
+  document.getElementById('progressText').textContent = 'Deleting files...';
+  try {
+    const results = await window.api.deleteFiles(paths);
+    const deleted = results.filter(r => r.status === 'deleted').length;
+    // Rescan to refresh state
+    await scanCurrentFolder();
+    alert(`Done! ${deleted} file(s) deleted.`);
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  }
+  document.getElementById('loadingOverlay').classList.remove('open');
+}
 </script>
 </body>
 </html>
