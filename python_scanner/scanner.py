@@ -183,10 +183,31 @@ def cluster_faces(all_face_data):
     return file_faces, person_thumbs
 
 # ---- Scanner ----
+DUPLICATES_DIR = "__duplicates__"
+
+def _collect_media_files(folder):
+    """Recursively collect all media files under folder, skipping __duplicates__/.
+    Returns sorted list of (absolute_path, rel_path) tuples."""
+    folder = Path(folder)
+    media_files = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        # Skip __duplicates__ directory
+        dirnames[:] = [d for d in dirnames if d != DUPLICATES_DIR]
+        for name in filenames:
+            ext = Path(name).suffix.lower()
+            if ext in MEDIA_EXTENSIONS:
+                abs_path = Path(dirpath) / name
+                rel_path = str(abs_path.relative_to(folder))
+                media_files.append((abs_path, rel_path))
+    return sorted(media_files, key=lambda x: x[1])
+
 def scan_folder(folder):
     folder = Path(folder).resolve()
     files = []
-    all_items = sorted(os.listdir(folder))
+
+    # Recursive traversal — collect all media files in tree
+    all_media = _collect_media_files(folder)
+    total_count = len(all_media)
 
     face_cascade, profile_cascade = None, None
     all_face_data = []
@@ -194,13 +215,14 @@ def scan_folder(folder):
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
         profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
 
-    for i, name in enumerate(all_items):
-        filepath = folder / name
-        if not filepath.is_file(): continue
+    for i, (filepath, rel_path) in enumerate(all_media):
+        name = filepath.name
         ext = filepath.suffix.lower()
-        if ext not in MEDIA_EXTENSIONS: continue
 
-        stat = filepath.stat()
+        try:
+            stat = filepath.stat()
+        except OSError:
+            continue
         size_bytes = stat.st_size
         size_mb = round(size_bytes/(1024*1024), 2)
         mod_time = datetime.fromtimestamp(stat.st_mtime)
@@ -244,10 +266,12 @@ def scan_folder(folder):
         entry = {
             "name": name,
             "path": str(filepath),
+            "rel_path": rel_path,
             "type": media_type,
             "ext": ext.lstrip('.'),
             "size_mb": size_mb,
             "size_bytes": size_bytes,
+            "mtime": stat.st_mtime,
             "date": date_taken.strftime("%Y-%m-%d %H:%M:%S"),
             "year": date_taken.strftime("%Y"),
             "month": date_taken.strftime("%Y-%m"),
@@ -262,8 +286,8 @@ def scan_folder(folder):
             "face_count": face_count,
         }
         files.append(entry)
-        pct = int((i+1)/len(all_items)*100)
-        print(f"\rScanning: {pct}% ({i+1}/{len(all_items)}) — {name[:40]}", end="", flush=True)
+        pct = int((i+1)/total_count*100) if total_count else 100
+        print(f"\rScanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}", end="", flush=True)
 
     print(f"\rScanned {len(files)} media files.                    ", flush=True)
 
@@ -297,7 +321,19 @@ def scan_folder(folder):
                     if nn not in mapped: mapped.append(nn)
                 f["faces"] = mapped
 
-    return files, person_thumbs
+    # Duplicate detection
+    duplicate_result = None
+    try:
+        from duplicate_detector import detect_duplicates
+        dry_run = "--move-duplicates" not in sys.argv
+        print("Running duplicate detection...", flush=True)
+        duplicate_result = detect_duplicates(files, folder, threshold=10, dry_run=dry_run)
+    except ImportError:
+        print("Warning: duplicate_detector module not found, skipping.", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Duplicate detection failed: {e}", file=sys.stderr)
+
+    return files, person_thumbs, duplicate_result
 
 if __name__ == "__main__":
     folder = sys.argv[1] if len(sys.argv) > 1 else "."
@@ -308,7 +344,7 @@ if __name__ == "__main__":
         print(json.dumps({"error": f"Not a directory: {folder}"}))
         sys.exit(1)
 
-    files, person_thumbs = scan_folder(folder)
+    files, person_thumbs, duplicate_result = scan_folder(folder)
 
     result = {
         "folder": str(folder),
@@ -319,7 +355,21 @@ if __name__ == "__main__":
         "persons": len(person_thumbs),
     }
 
+    # Attach duplicate groups to result
+    if duplicate_result:
+        result["duplicate_groups"] = {
+            "exact": duplicate_result["exact"],
+            "near": duplicate_result["near"],
+        }
+        result["duplicate_stats"] = duplicate_result["stats"]
+        result["duplicate_moved"] = duplicate_result["moved"]
+
     if json_mode:
         print(json.dumps(result))
     else:
         print(f"Total: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
+        if duplicate_result:
+            s = duplicate_result["stats"]
+            print(f"Duplicates: {s['exact_groups']} exact groups, "
+                  f"{s['near_groups']} near groups, "
+                  f"{s['duplicates_found']} total duplicates found")
