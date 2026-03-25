@@ -149,14 +149,22 @@
   .dup-row .set-keeper-btn:hover { border-color:var(--accent); color:var(--accent); }
   .dup-row.is-keeper { background:rgba(129,199,132,0.08); }
   .dup-row .distance-badge { font-size:9px; color:var(--text2); background:var(--surface); padding:1px 5px; border-radius:3px; flex-shrink:0; }
+  .dup-row .suggested-badge { background:#ff9800; color:#000; font-size:9px; padding:2px 6px; border-radius:4px; font-weight:600; flex-shrink:0; }
+  .similarity-bar { display:inline-block; width:48px; height:6px; background:var(--border); border-radius:3px; overflow:hidden; vertical-align:middle; margin-right:4px; }
+  .similarity-bar .fill { height:100%; border-radius:3px; }
+  .dup-group.ignored { opacity:0.45; }
+  .dup-group.ignored .dup-group-body { display:none; }
+  .btn-ignore { background:none; border:1px solid var(--border); color:var(--text2); font-size:10px; padding:2px 8px; border-radius:4px; cursor:pointer; margin-left:auto; }
+  .btn-ignore:hover { border-color:var(--accent); color:var(--accent); }
+  .btn-ignore.active { border-color:var(--danger); color:var(--danger); }
 
   /* Duplicate action bar */
   .dup-actions { display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
   .dup-actions button { padding:8px 16px; border-radius:6px; font-size:12px; cursor:pointer; border:none; font-weight:600; }
   .dup-actions .btn-move { background:#ff9800; color:#000; }
   .dup-actions .btn-move:hover { opacity:0.85; }
-  .dup-actions .btn-delete { background:var(--danger); color:#fff; }
-  .dup-actions .btn-delete:hover { opacity:0.85; }
+  .dup-actions .btn-trash { background:var(--danger); color:#fff; }
+  .dup-actions .btn-trash:hover { opacity:0.85; }
   .dup-actions .btn-select { background:var(--card); color:var(--text); border:1px solid var(--border) !important; }
   .dup-actions .btn-select:hover { border-color:var(--accent) !important; }
   .dup-actions .selection-count { font-size:12px; color:var(--text2); }
@@ -322,6 +330,7 @@ let PERSON_THUMBS = {};
 let DUP_GROUPS = null;  // { exact: [], near: [] }
 let DUP_SELECTED = new Set(); // rel_paths selected for action
 let DUP_KEEPERS = {};  // groupKey -> rel_path (manual keeper overrides)
+let IGNORED_GROUPS = new Set(); // group keys to hide
 let pendingConfirmFn = null;
 let currentFolder = null;
 let filtered = [];
@@ -357,6 +366,13 @@ async function scanCurrentFolder() {
     DUP_GROUPS = result.duplicate_groups || null;
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
+    // Load persisted ignored groups
+    try {
+      const ignored = await window.api.loadIgnoredGroups(currentFolder);
+      IGNORED_GROUPS = new Set(ignored || []);
+    } catch (_) {
+      IGNORED_GROUPS = new Set();
+    }
 
     document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
     document.getElementById('folderName').title = currentFolder;
@@ -673,7 +689,9 @@ function switchTab(tab) {
 function updateDupBadge() {
   const badge = document.getElementById('dupBadge');
   if (!DUP_GROUPS) { badge.style.display = 'none'; return; }
-  const total = (DUP_GROUPS.exact || []).length + (DUP_GROUPS.near || []).length;
+  const exactCount = (DUP_GROUPS.exact || []).filter((_, i) => !IGNORED_GROUPS.has(`exact_${i}`)).length;
+  const nearCount = (DUP_GROUPS.near || []).filter((_, i) => !IGNORED_GROUPS.has(`near_${i}`)).length;
+  const total = exactCount + nearCount;
   if (total > 0) {
     badge.textContent = total;
     badge.style.display = 'inline';
@@ -687,6 +705,42 @@ function getFileByRel(relPath) {
   return DATA.find(f => f.rel_path === relPath);
 }
 
+// ---- Similarity & Suggested Best helpers ----
+function distanceToSimilarity(distance) {
+  // pHash is 64-bit, max Hamming distance = 64
+  // Convert to percentage: 0 distance = 100%, 64 distance = 0%
+  if (distance === null || distance === undefined) return 100;
+  return Math.max(0, Math.round((1 - distance / 64) * 100));
+}
+
+function similarityColor(pct) {
+  if (pct >= 95) return '#4caf50';
+  if (pct >= 85) return '#8bc34a';
+  if (pct >= 70) return '#ff9800';
+  return '#ef5350';
+}
+
+function pickSuggestedBest(relPaths) {
+  // Score each file: higher resolution + larger size = better quality
+  let best = null;
+  let bestScore = -1;
+  for (const rel of relPaths) {
+    const f = getFileByRel(rel);
+    if (!f) continue;
+    let resScore = 0;
+    if (f.resolution && f.resolution !== 'Unknown') {
+      const parts = f.resolution.split('x');
+      if (parts.length === 2) resScore = parseInt(parts[0]) * parseInt(parts[1]) || 0;
+    }
+    const score = resScore + (f.size_bytes || 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = rel;
+    }
+  }
+  return best;
+}
+
 function renderDuplicates() {
   const panel = document.getElementById('dupPanel');
   if (!DUP_GROUPS) {
@@ -696,11 +750,15 @@ function renderDuplicates() {
 
   const exact = DUP_GROUPS.exact || [];
   const near = DUP_GROUPS.near || [];
-  const totalGroups = exact.length + near.length;
-  const totalDups = exact.reduce((s, g) => s + g.duplicates.length, 0)
-                  + near.reduce((s, g) => s + g.duplicates.length, 0);
+  // Count only non-ignored groups
+  const visibleExact = exact.filter((_, i) => !IGNORED_GROUPS.has(`exact_${i}`));
+  const visibleNear = near.filter((_, i) => !IGNORED_GROUPS.has(`near_${i}`));
+  const totalGroups = visibleExact.length + visibleNear.length;
+  const ignoredCount = IGNORED_GROUPS.size;
+  const totalDups = visibleExact.reduce((s, g) => s + g.duplicates.length, 0)
+                  + visibleNear.reduce((s, g) => s + g.duplicates.length, 0);
 
-  if (totalGroups === 0) {
+  if (exact.length + near.length === 0) {
     panel.innerHTML = '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates found in your photo library.</p></div>';
     return;
   }
@@ -709,9 +767,12 @@ function renderDuplicates() {
 
   // Summary cards
   html += '<div class="dup-summary">';
-  html += `<div class="dup-stat-card"><div class="num">${exact.length}</div><div class="label">Exact Duplicate Groups</div></div>`;
-  html += `<div class="dup-stat-card"><div class="num">${near.length}</div><div class="label">Near Duplicate Groups</div></div>`;
+  html += `<div class="dup-stat-card"><div class="num">${visibleExact.length}</div><div class="label">Exact Duplicate Groups</div></div>`;
+  html += `<div class="dup-stat-card"><div class="num">${visibleNear.length}</div><div class="label">Near Duplicate Groups</div></div>`;
   html += `<div class="dup-stat-card"><div class="num">${totalDups}</div><div class="label">Total Duplicates</div></div>`;
+  if (ignoredCount > 0) {
+    html += `<div class="dup-stat-card"><div class="num" style="color:var(--text2)">${ignoredCount}</div><div class="label">Ignored Groups</div></div>`;
+  }
   html += '</div>';
 
   // Action bar
@@ -719,7 +780,10 @@ function renderDuplicates() {
   html += '<button class="btn-select" onclick="selectAllDups()">Select All Duplicates</button>';
   html += '<button class="btn-select" onclick="deselectAllDups()">Deselect All</button>';
   html += '<button class="btn-move" onclick="previewMoveDups()">Move Selected</button>';
-  html += '<button class="btn-delete" onclick="previewDeleteDups()">Delete Selected</button>';
+  html += '<button class="btn-trash" onclick="previewTrashDups()">Trash Selected</button>';
+  if (ignoredCount > 0) {
+    html += `<button class="btn-select" onclick="clearIgnored()">Show ${ignoredCount} Ignored</button>`;
+  }
   html += `<span class="selection-count" id="selectionCount">${DUP_SELECTED.size} selected</span>`;
   html += '</div>';
 
@@ -728,25 +792,26 @@ function renderDuplicates() {
     html += '<div class="dup-section"><h3>Exact Duplicates (identical files)</h3>';
     exact.forEach((group, gi) => {
       const gKey = `exact_${gi}`;
+      const isIgnored = IGNORED_GROUPS.has(gKey);
       const keeper = DUP_KEEPERS[gKey] || group.keep;
-      const allFiles = [keeper, ...group.duplicates.filter(d => d !== keeper)];
-      // Re-add keeper if it was in duplicates due to override
       const uniqueFiles = [...new Set([keeper, ...group.duplicates])];
       if (!uniqueFiles.includes(group.keep) && group.keep !== keeper) {
         uniqueFiles.push(group.keep);
       }
+      const suggested = pickSuggestedBest(uniqueFiles);
 
-      html += `<div class="dup-group">`;
-      html += `<div class="dup-group-header" onclick="toggleGroup('${gKey}')">`;
-      html += `<span class="group-title">Group ${gi + 1} — ${uniqueFiles.length} files</span>`;
-      html += `<span class="group-meta">${group.hash}</span>`;
+      html += `<div class="dup-group ${isIgnored ? 'ignored' : ''}">`;
+      html += `<div class="dup-group-header">`;
+      html += `<span class="group-title" onclick="toggleGroup('${gKey}')" style="cursor:pointer;flex:1;">Group ${gi + 1} — ${uniqueFiles.length} files · 100% match</span>`;
+      html += `<button class="btn-ignore ${isIgnored ? 'active' : ''}" onclick="toggleIgnore('${gKey}')">${isIgnored ? 'Unignore' : 'Ignore'}</button>`;
       html += '</div>';
-      html += `<div class="dup-group-body" id="group_${gKey}">`;
+      html += `<div class="dup-group-body" id="group_${gKey}" ${isIgnored ? 'style="display:none"' : ''}>`;
 
       uniqueFiles.forEach(rel => {
         const f = getFileByRel(rel);
         const isKeeper = rel === keeper;
-        html += renderDupRow(rel, f, isKeeper, gKey, null);
+        const isSuggested = rel === suggested && suggested !== keeper;
+        html += renderDupRow(rel, f, isKeeper, gKey, null, isSuggested);
       });
 
       html += '</div></div>';
@@ -759,20 +824,29 @@ function renderDuplicates() {
     html += '<div class="dup-section"><h3>Near Duplicates (visually similar)</h3>';
     near.forEach((group, gi) => {
       const gKey = `near_${gi}`;
+      const isIgnored = IGNORED_GROUPS.has(gKey);
       const keeper = DUP_KEEPERS[gKey] || group.keep;
       const members = group.members || [];
+      const allRels = members.map(m => m.rel_path);
+      const suggested = pickSuggestedBest(allRels);
+      // Group-level similarity: average of non-zero distances
+      const dists = members.map(m => m.distance).filter(d => d > 0);
+      const avgSim = dists.length > 0
+        ? distanceToSimilarity(Math.round(dists.reduce((a,b) => a+b, 0) / dists.length))
+        : 100;
 
-      html += `<div class="dup-group">`;
-      html += `<div class="dup-group-header" onclick="toggleGroup('${gKey}')">`;
-      html += `<span class="group-title">Group ${gi + 1} — ${members.length} files</span>`;
-      html += `<span class="group-meta">pHash similarity</span>`;
+      html += `<div class="dup-group ${isIgnored ? 'ignored' : ''}">`;
+      html += `<div class="dup-group-header">`;
+      html += `<span class="group-title" onclick="toggleGroup('${gKey}')" style="cursor:pointer;flex:1;">Group ${gi + 1} — ${members.length} files · ~${avgSim}% similar</span>`;
+      html += `<button class="btn-ignore ${isIgnored ? 'active' : ''}" onclick="toggleIgnore('${gKey}')">${isIgnored ? 'Unignore' : 'Ignore'}</button>`;
       html += '</div>';
-      html += `<div class="dup-group-body" id="group_${gKey}">`;
+      html += `<div class="dup-group-body" id="group_${gKey}" ${isIgnored ? 'style="display:none"' : ''}>`;
 
       members.forEach(m => {
         const f = getFileByRel(m.rel_path);
         const isKeeper = m.rel_path === keeper;
-        html += renderDupRow(m.rel_path, f, isKeeper, gKey, m.distance);
+        const isSuggested = m.rel_path === suggested && suggested !== keeper;
+        html += renderDupRow(m.rel_path, f, isKeeper, gKey, m.distance, isSuggested);
       });
 
       html += '</div></div>';
@@ -783,18 +857,31 @@ function renderDuplicates() {
   panel.innerHTML = html;
 }
 
-function renderDupRow(relPath, fileData, isKeeper, groupKey, distance) {
+function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggested) {
   const thumbSrc = fileData && fileData.thumb ? `data:image/jpeg;base64,${fileData.thumb}` : '';
   const thumbTag = thumbSrc
     ? `<img class="dup-thumb" src="${thumbSrc}">`
     : `<div class="dup-thumb" style="display:flex;align-items:center;justify-content:center;font-size:18px;">🖼</div>`;
   const sizeMb = fileData ? fileData.size_mb : '?';
   const date = fileData ? fileData.date : '';
+  const res = fileData && fileData.resolution !== 'Unknown' ? fileData.resolution : '';
   const checked = DUP_SELECTED.has(relPath) ? 'checked' : '';
   const rowClass = isKeeper ? 'dup-row is-keeper' : 'dup-row';
-  const distBadge = distance !== null && distance !== undefined
-    ? `<span class="distance-badge">d=${distance}</span>` : '';
 
+  // Similarity badge (for near duplicates)
+  let simHtml = '';
+  if (distance !== null && distance !== undefined) {
+    const pct = distanceToSimilarity(distance);
+    const color = similarityColor(pct);
+    simHtml = `<span class="distance-badge"><span class="similarity-bar"><span class="fill" style="width:${pct}%;background:${color};"></span></span>${pct}%</span>`;
+  } else {
+    simHtml = '<span class="distance-badge">100%</span>';
+  }
+
+  // Suggested best badge
+  const suggestedHtml = isSuggested ? '<span class="suggested-badge">BEST</span>' : '';
+
+  // Keeper or set-keeper button
   let keeperHtml;
   if (isKeeper) {
     keeperHtml = '<span class="keeper-badge">KEEP</span>';
@@ -808,9 +895,10 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance) {
     ${thumbTag}
     <div class="dup-info">
       <div class="dup-name" title="${relPath}">${relPath}</div>
-      <div class="dup-meta">${sizeMb} MB · ${date}</div>
+      <div class="dup-meta">${sizeMb} MB${res ? ' · ' + res : ''} · ${date}</div>
     </div>
-    ${distBadge}
+    ${simHtml}
+    ${suggestedHtml}
     ${keeperHtml}
   </div>`;
 }
@@ -833,9 +921,9 @@ function selectAllDups() {
   const addDups = (groups, prefix) => {
     groups.forEach((g, i) => {
       const gKey = `${prefix}_${i}`;
+      if (IGNORED_GROUPS.has(gKey)) return; // skip ignored
       const keeper = DUP_KEEPERS[gKey] || g.keep;
       (g.duplicates || []).forEach(d => { if (d !== keeper) DUP_SELECTED.add(d); });
-      // For near groups, also check members not in duplicates list that aren't keeper
       if (g.members) {
         g.members.forEach(m => { if (m.rel_path !== keeper) DUP_SELECTED.add(m.rel_path); });
       }
@@ -862,6 +950,43 @@ function setKeeper(groupKey, relPath) {
   // Remove new keeper from selection, add old keeper's duplicates
   DUP_SELECTED.delete(relPath);
   renderDuplicates();
+}
+
+// ---- Ignore Groups ----
+async function toggleIgnore(gKey) {
+  if (IGNORED_GROUPS.has(gKey)) {
+    IGNORED_GROUPS.delete(gKey);
+  } else {
+    IGNORED_GROUPS.add(gKey);
+    // Remove ignored group's files from selection
+    removeGroupFromSelection(gKey);
+  }
+  await persistIgnored();
+  renderDuplicates();
+}
+
+async function clearIgnored() {
+  IGNORED_GROUPS = new Set();
+  await persistIgnored();
+  renderDuplicates();
+}
+
+async function persistIgnored() {
+  if (!currentFolder) return;
+  try {
+    await window.api.saveIgnoredGroups(currentFolder, [...IGNORED_GROUPS]);
+  } catch (_) {}
+}
+
+function removeGroupFromSelection(gKey) {
+  if (!DUP_GROUPS) return;
+  const [prefix, idxStr] = gKey.split('_');
+  const idx = parseInt(idxStr);
+  const groups = prefix === 'exact' ? (DUP_GROUPS.exact || []) : (DUP_GROUPS.near || []);
+  const g = groups[idx];
+  if (!g) return;
+  (g.duplicates || []).forEach(d => DUP_SELECTED.delete(d));
+  if (g.members) g.members.forEach(m => DUP_SELECTED.delete(m.rel_path));
 }
 
 // ---- Confirm Modal ----
@@ -921,8 +1046,8 @@ async function executeMoveDups() {
   document.getElementById('loadingOverlay').classList.remove('open');
 }
 
-// ---- Delete Duplicates ----
-function previewDeleteDups() {
+// ---- Trash Duplicates (recycle bin) ----
+function previewTrashDups() {
   if (DUP_SELECTED.size === 0) { alert('No duplicates selected.'); return; }
   const items = [...DUP_SELECTED];
   let listHtml = '<div class="preview-list">';
@@ -930,23 +1055,25 @@ function previewDeleteDups() {
     listHtml += `<div class="preview-item"><span class="from">${rel}</span></div>`;
   });
   listHtml += '</div>';
-  listHtml += `<div class="confirm-warn">WARNING: ${items.length} file(s) will be permanently deleted. This cannot be undone.</div>`;
+  listHtml += `<p style="font-size:12px;margin-top:8px;">${items.length} file(s) will be sent to the <b>recycle bin</b>. You can restore them later if needed.</p>`;
 
-  openConfirm('Delete Duplicates', listHtml, 'Delete Permanently', 'btn-save', executeDeleteDups);
+  openConfirm('Trash Duplicates', listHtml, 'Send to Trash', 'btn-save', executeTrashDups);
 }
 
-async function executeDeleteDups() {
+async function executeTrashDups() {
   const paths = [...DUP_SELECTED].map(rel => currentFolder + '/' + rel);
   document.getElementById('loadingOverlay').classList.add('open');
-  document.getElementById('progressText').textContent = 'Deleting files...';
+  document.getElementById('progressText').textContent = 'Sending to trash...';
   try {
-    const results = await window.api.deleteFiles(paths);
-    const deleted = results.filter(r => r.status === 'deleted').length;
-    // Rescan to refresh state
+    const results = await window.api.trashFiles(paths);
+    const trashed = results.filter(r => r.status === 'trashed').length;
+    const errors = results.filter(r => r.status === 'error');
     await scanCurrentFolder();
-    alert(`Done! ${deleted} file(s) deleted.`);
+    let msg = `Done! ${trashed} file(s) sent to recycle bin.`;
+    if (errors.length > 0) msg += `\n${errors.length} file(s) could not be trashed.`;
+    alert(msg);
   } catch (err) {
-    alert('Delete failed: ' + err.message);
+    alert('Trash failed: ' + err.message);
   }
   document.getElementById('loadingOverlay').classList.remove('open');
 }
