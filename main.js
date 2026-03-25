@@ -29,34 +29,56 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// ---- IPC Handlers ----
+// ---- Dev vs Production detection ----
 
-// Pick folder
-ipcMain.handle('pick-folder', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-    title: 'Select Photo Folder',
-  });
-  return result.canceled ? null : result.filePaths[0];
-});
+function isDev() {
+  return !app.isPackaged;
+}
 
-// Scan folder — runs Python scanner as child process
-ipcMain.handle('scan-folder', async (event, folderPath) => {
+function getScannerCommand(folderPath, extraArgs) {
+  const args = [folderPath, '--json', ...extraArgs];
+
+  if (isDev()) {
+    // Dev mode: use system Python + script
+    const scriptPath = path.join(__dirname, 'python_scanner', 'scanner.py');
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    return { cmd: pythonCmd, args: [scriptPath, ...args], cwd: path.join(__dirname, 'python_scanner') };
+  }
+
+  // Production: use bundled scanner executable
+  const exeName = process.platform === 'win32' ? 'scanner.exe' : 'scanner';
+  const exePath = path.join(process.resourcesPath, 'python_bin', exeName);
+
+  if (!fs.existsSync(exePath)) {
+    throw new Error(
+      `Scanner executable not found at: ${exePath}\n` +
+      'The portable build may be incomplete. Please rebuild with BUILD-PORTABLE.bat.'
+    );
+  }
+
+  return { cmd: exePath, args, cwd: path.dirname(exePath) };
+}
+
+function spawnScanner(folderPath, extraArgs, progressFilter) {
   return new Promise((resolve, reject) => {
-    const scriptPath = getScriptPath();
-    const proc = spawn('python3', [scriptPath, folderPath, '--json'], {
-      cwd: folderPath,
-    });
+    let scannerInfo;
+    try {
+      scannerInfo = getScannerCommand(folderPath, extraArgs);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+
+    const proc = spawn(scannerInfo.cmd, scannerInfo.args, { cwd: scannerInfo.cwd });
 
     let stdout = '';
     let stderr = '';
 
     proc.stdout.on('data', (data) => {
       stdout += data.toString();
-      // Forward progress to renderer
       const lines = data.toString().split('\n');
       lines.forEach((line) => {
-        if (line.includes('Scanning:')) {
+        if (progressFilter(line)) {
           mainWindow.webContents.send('scan-progress', line.trim());
         }
       });
@@ -64,13 +86,23 @@ ipcMain.handle('scan-folder', async (event, folderPath) => {
 
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
+    proc.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        const hint = isDev()
+          ? 'Python not found. Install Python 3.8+ and ensure it is on your PATH.'
+          : 'Scanner executable not found. Please rebuild with BUILD-PORTABLE.bat.';
+        reject(new Error(hint));
+      } else {
+        reject(err);
+      }
+    });
+
     proc.on('close', (code) => {
       if (code !== 0) {
         reject(new Error(`Scanner exited with code ${code}: ${stderr}`));
         return;
       }
       try {
-        // Extract JSON from stdout (last JSON block)
         const jsonMatch = stdout.match(/\{[\s\S]*\}(?=[^}]*$)/);
         if (jsonMatch) {
           resolve(JSON.parse(jsonMatch[0]));
@@ -82,12 +114,35 @@ ipcMain.handle('scan-folder', async (event, folderPath) => {
       }
     });
   });
+}
+
+// ---- IPC Handlers ----
+
+// Pick folder
+ipcMain.handle('pick-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select Photo Folder',
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+// Scan folder — uses bundled EXE in production, Python in dev
+ipcMain.handle('scan-folder', async (event, folderPath) => {
+  return spawnScanner(folderPath, [], (line) => line.includes('Scanning:'));
+});
+
+// Move duplicates — re-runs scanner with --move-duplicates flag
+ipcMain.handle('move-duplicates', async (event, folderPath) => {
+  return spawnScanner(folderPath, ['--move-duplicates'], (line) =>
+    line.includes('Scanning:') || line.includes('Detecting') || line.includes('Moving')
+  );
 });
 
 // Save face_names.json directly to folder
 ipcMain.handle('save-face-names', async (event, folderPath, nameMap) => {
   const filePath = path.join(folderPath, 'face_names.json');
-  // MODIFIED: Merge with existing mappings if file exists
+  // Merge with existing mappings if file exists
   let existing = {};
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
@@ -119,48 +174,6 @@ ipcMain.handle('read-image', async (event, filePath) => {
   } catch (_) {
     return null;
   }
-});
-
-// Move duplicates — re-runs Python scanner with --move-duplicates flag
-ipcMain.handle('move-duplicates', async (event, folderPath) => {
-  return new Promise((resolve, reject) => {
-    const scriptPath = getScriptPath();
-    const proc = spawn('python3', [scriptPath, folderPath, '--json', '--move-duplicates'], {
-      cwd: folderPath,
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-      const lines = data.toString().split('\n');
-      lines.forEach((line) => {
-        if (line.includes('Scanning:') || line.includes('Detecting') || line.includes('Moving')) {
-          mainWindow.webContents.send('scan-progress', line.trim());
-        }
-      });
-    });
-
-    proc.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Scanner exited with code ${code}: ${stderr}`));
-        return;
-      }
-      try {
-        const jsonMatch = stdout.match(/\{[\s\S]*\}(?=[^}]*$)/);
-        if (jsonMatch) {
-          resolve(JSON.parse(jsonMatch[0]));
-        } else {
-          reject(new Error('No JSON output from scanner'));
-        }
-      } catch (e) {
-        reject(new Error(`JSON parse error: ${e.message}`));
-      }
-    });
-  });
 });
 
 // Trash duplicate files (send to recycle bin)
@@ -246,10 +259,3 @@ ipcMain.handle('move-tagged-files', async (event, folderPath, relPaths, targetSu
   }
   return results;
 });
-
-function getScriptPath() {
-  // In dev: same directory; in packaged: extraResources
-  const devPath = path.join(__dirname, 'python_scanner', 'scanner.py');
-  const prodPath = path.join(process.resourcesPath, 'python_scanner', 'scanner.py');
-  return fs.existsSync(devPath) ? devPath : prodPath;
-}

@@ -5,7 +5,18 @@ __pycache__/
 *.pyc
 *.pyo
 face_names.json
+photo_tags.json
+hash_cache.json
+ignored_duplicates.json
 *.egg-info/
 .DS_Store
 Thumbs.db
 *.log
+
+# PyInstaller build artifacts
+python_scanner/build/
+python_scanner/dist/
+
+# Bundled scanner binary (built by BUILD-PORTABLE.bat)
+python_bin/scanner.exe
+python_bin/scanner

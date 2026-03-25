@@ -1,24 +1,27 @@
 {
   "name": "photo-organizer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Google Photos-style offline photo organizer with face detection",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "build-portable": "electron-builder --win portable"
   },
   "build": {
     "appId": "com.indiatech247.photo-organizer",
     "productName": "PhotoOrganizer",
     "files": [
       "**/*",
-      "!node_modules/.cache"
+      "!node_modules/.cache",
+      "!python_scanner",
+      "!python_bin"
     ],
     "extraResources": [
       {
-        "from": "python_scanner",
-        "to": "python_scanner"
+        "from": "python_bin",
+        "to": "python_bin"
       }
     ],
     "win": {
