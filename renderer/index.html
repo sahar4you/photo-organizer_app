@@ -430,15 +430,17 @@ async function scanCurrentFolder() {
   document.getElementById('progressBarTrack').style.display = 'block';
   document.getElementById('progressBarFill').style.width = '0%';
 
-  window.api.onScanProgress((msg) => {
-    document.getElementById('progressText').textContent = msg;
-  });
-  window.api.onScanProgressJson((data) => {
-    if (data && data.progress !== undefined) {
-      document.getElementById('progressBarFill').style.width = data.progress + '%';
-      document.getElementById('progressText').textContent =
-        `Scanning: ${data.progress}% (${data.current}/${data.total})`;
-    }
+  window.api.onScanProgressJson((msg) => {
+    if (!msg || msg.value === undefined) return;
+    document.getElementById('progressBarFill').style.width = msg.value + '%';
+    const statusMap = {
+      'scanning': `Scanning ${msg.total} files... ${msg.value}%`,
+      'clustering faces': 'Processing faces...',
+      'detecting duplicates': 'Detecting duplicates...',
+      'finalizing': 'Finalizing...',
+    };
+    document.getElementById('progressText').textContent =
+      statusMap[msg.status] || `Processing... ${msg.value}%`;
   });
 
   try {
@@ -615,19 +617,15 @@ function render() {
     html += `<div class="date-group"><h2>${day} — ${groups[day].length} files</h2><div class="grid ${gridSize}">`;
     groups[day].forEach(f => {
       const idx = filtered.indexOf(f);
-      // Thumbnail: prefer disk thumbnail_path, fallback to base64 thumb, then placeholder
-      const hasDiskThumb = f.thumbnail_path && currentFolder;
-      const hasB64Thumb = f.thumb;
+      // Thumbnail: on-demand generation for images, placeholder for videos
       let imgTag;
-      if (hasDiskThumb) {
-        // Lazy-loaded via IntersectionObserver
-        imgTag = `<img class="card-thumb lazy-thumb" data-folder="${currentFolder}" data-thumb="${f.thumbnail_path}" alt="${f.name}" src="">`;
-      } else if (hasB64Thumb) {
-        imgTag = `<img class="card-thumb" src="data:image/jpeg;base64,${f.thumb}" alt="${f.name}" loading="lazy">`;
+      if (f.type !== 'video' && currentFolder) {
+        // Lazy-loaded on-demand via IntersectionObserver
+        imgTag = `<img class="card-thumb lazy-thumb" data-folder="${currentFolder}" data-rel="${f.rel_path}" alt="${f.name}" src="${f.thumb ? 'data:image/jpeg;base64,' + f.thumb : ''}">`;
+      } else if (f.type === 'video') {
+        imgTag = '<div class="placeholder-img">🎬</div>';
       } else {
-        imgTag = f.type === 'video'
-          ? '<div class="placeholder-img">🎬</div>'
-          : '<div class="placeholder-img">🖼</div>';
+        imgTag = '<div class="placeholder-img">🖼</div>';
       }
       const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
       const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
@@ -659,27 +657,34 @@ function render() {
   initLazyThumbs();
 }
 
-// Lazy-load disk thumbnails via IntersectionObserver
+// Dynamic thumbnail size based on grid mode
+function getThumbSize() {
+  if (gridSize === 'small') return 150;
+  if (gridSize === 'large') return 300;
+  return 200; // medium / list-view
+}
+
+// On-demand lazy thumbnail generation via IntersectionObserver
 let thumbObserver = null;
 function initLazyThumbs() {
   if (thumbObserver) thumbObserver.disconnect();
   const imgs = document.querySelectorAll('.lazy-thumb');
   if (imgs.length === 0) return;
+  const thumbSize = getThumbSize();
   thumbObserver = new IntersectionObserver((entries) => {
     entries.forEach(async (entry) => {
       if (!entry.isIntersecting) return;
       const img = entry.target;
       const folder = img.dataset.folder;
-      const thumbPath = img.dataset.thumb;
-      if (!folder || !thumbPath) return;
+      const relPath = img.dataset.rel;
+      if (!folder || !relPath) return;
       thumbObserver.unobserve(img);
       try {
-        const dataUrl = await window.api.readThumbnail(folder, thumbPath);
+        const dataUrl = await window.api.generateThumbnail(folder, relPath, thumbSize);
         if (dataUrl) img.src = dataUrl;
-        else img.src = '';
       } catch (_) {}
     });
-  }, { rootMargin: '200px' });
+  }, { rootMargin: '300px' });
   imgs.forEach(img => thumbObserver.observe(img));
 }
 
@@ -725,11 +730,101 @@ function navLightbox(dir) {
 }
 
 document.addEventListener('keydown', e => {
-  if (!document.getElementById('lightbox').classList.contains('open')) return;
-  if (e.key === 'Escape') closeLightbox();
-  if (e.key === 'ArrowLeft') navLightbox(-1);
-  if (e.key === 'ArrowRight') navLightbox(1);
+  // Skip shortcuts when typing in input/select fields
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  // Lightbox navigation
+  if (document.getElementById('lightbox').classList.contains('open')) {
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') navLightbox(-1);
+    if (e.key === 'ArrowRight') navLightbox(1);
+    return;
+  }
+
+  // Gallery keyboard shortcuts
+  if (activeTab !== 'gallery' || !filtered.length) return;
+
+  // Ctrl+A — select all visible photos
+  if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (!selectMode) toggleSelectMode();
+    filtered.forEach(f => SELECTED_PHOTOS.add(f.rel_path));
+    updateTagSelCount();
+    render();
+    return;
+  }
+
+  // Delete — trash selected
+  if (e.key === 'Delete' && selectMode && SELECTED_PHOTOS.size > 0) {
+    e.preventDefault();
+    previewTrashSelected();
+    return;
+  }
+
+  // Arrow keys — navigate gallery focus
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' ||
+      e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    navigateGallery(e.key);
+    return;
+  }
+
+  // Enter — open focused photo in lightbox
+  if (e.key === 'Enter' && galleryFocusIdx >= 0) {
+    e.preventDefault();
+    openLightbox(galleryFocusIdx);
+    return;
+  }
+
+  // Escape — exit select mode
+  if (e.key === 'Escape' && selectMode) {
+    exitSelectMode();
+    return;
+  }
 });
+
+let galleryFocusIdx = -1;
+function navigateGallery(key) {
+  const cards = document.querySelectorAll('.gallery .card');
+  if (cards.length === 0) return;
+  // Remove old focus
+  cards.forEach(c => c.style.outline = '');
+  if (key === 'ArrowRight') galleryFocusIdx = Math.min(galleryFocusIdx + 1, cards.length - 1);
+  else if (key === 'ArrowLeft') galleryFocusIdx = Math.max(galleryFocusIdx - 1, 0);
+  else if (key === 'ArrowDown') galleryFocusIdx = Math.min(galleryFocusIdx + 4, cards.length - 1);
+  else if (key === 'ArrowUp') galleryFocusIdx = Math.max(galleryFocusIdx - 4, 0);
+  if (galleryFocusIdx < 0) galleryFocusIdx = 0;
+  const focused = cards[galleryFocusIdx];
+  if (focused) {
+    focused.style.outline = '2px solid var(--accent)';
+    focused.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+async function previewTrashSelected() {
+  const items = [...SELECTED_PHOTOS];
+  if (items.length === 0) return;
+  let listHtml = '<div class="preview-list">';
+  items.slice(0, 20).forEach(rel => {
+    listHtml += `<div class="preview-item"><span class="from">${rel}</span></div>`;
+  });
+  if (items.length > 20) listHtml += `<div class="preview-item" style="color:var(--text2);">...and ${items.length - 20} more</div>`;
+  listHtml += '</div>';
+  listHtml += `<p style="font-size:12px;margin-top:8px;">${items.length} file(s) will be sent to the recycle bin.</p>`;
+  openConfirm('Trash Selected Photos', listHtml, 'Send to Trash', 'btn-save', async () => {
+    const paths = items.map(rel => currentFolder + '/' + rel);
+    document.getElementById('loadingOverlay').classList.add('open');
+    document.getElementById('progressText').textContent = 'Sending to trash...';
+    try {
+      const results = await window.api.trashFiles(paths);
+      const trashed = results.filter(r => r.status === 'trashed').length;
+      await scanCurrentFolder();
+      alert(`Done! ${trashed} file(s) sent to recycle bin.`);
+    } catch (err) { alert('Trash failed: ' + err.message); }
+    document.getElementById('loadingOverlay').classList.remove('open');
+  });
+}
 
 // ---- Face Manager ----
 function openFaceManager() {

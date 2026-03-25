@@ -59,7 +59,7 @@ function getScannerCommand(folderPath, extraArgs) {
   return { cmd: exePath, args, cwd: path.dirname(exePath) };
 }
 
-function spawnScanner(folderPath, extraArgs, progressFilter) {
+function spawnScanner(folderPath, extraArgs) {
   return new Promise((resolve, reject) => {
     let scannerInfo;
     try {
@@ -71,26 +71,31 @@ function spawnScanner(folderPath, extraArgs, progressFilter) {
 
     const proc = spawn(scannerInfo.cmd, scannerInfo.args, { cwd: scannerInfo.cwd });
 
-    let stdout = '';
+    let buffer = '';
+    let resultData = null;
     let stderr = '';
 
+    // Line-delimited JSON parser — every stdout line is valid JSON
     proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-      const lines = data.toString().split('\n');
-      lines.forEach((line) => {
+      buffer += data.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete last line in buffer
+      for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) return;
-        // Forward JSON progress objects
-        if (trimmed.startsWith('{"progress"')) {
-          try {
-            mainWindow.webContents.send('scan-progress-json', JSON.parse(trimmed));
-          } catch (_) {}
-          return;
+        if (!trimmed) continue;
+        try {
+          const msg = JSON.parse(trimmed);
+          if (msg.type === 'progress') {
+            mainWindow.webContents.send('scan-progress-json', msg);
+          } else if (msg.type === 'result') {
+            resultData = msg.data;
+          } else if (msg.type === 'error') {
+            reject(new Error(msg.message));
+          }
+        } catch (_) {
+          // Ignore non-JSON lines (shouldn't happen but safe fallback)
         }
-        if (progressFilter(trimmed)) {
-          mainWindow.webContents.send('scan-progress', trimmed);
-        }
-      });
+      }
     });
 
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
@@ -107,19 +112,22 @@ function spawnScanner(folderPath, extraArgs, progressFilter) {
     });
 
     proc.on('close', (code) => {
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        try {
+          const msg = JSON.parse(buffer.trim());
+          if (msg.type === 'result') resultData = msg.data;
+          else if (msg.type === 'error') { reject(new Error(msg.message)); return; }
+        } catch (_) {}
+      }
       if (code !== 0) {
         reject(new Error(`Scanner exited with code ${code}: ${stderr}`));
         return;
       }
-      try {
-        const jsonMatch = stdout.match(/\{[\s\S]*\}(?=[^}]*$)/);
-        if (jsonMatch) {
-          resolve(JSON.parse(jsonMatch[0]));
-        } else {
-          reject(new Error('No JSON output from scanner'));
-        }
-      } catch (e) {
-        reject(new Error(`JSON parse error: ${e.message}`));
+      if (resultData) {
+        resolve(resultData);
+      } else {
+        reject(new Error('No result received from scanner'));
       }
     });
   });
@@ -138,14 +146,12 @@ ipcMain.handle('pick-folder', async () => {
 
 // Scan folder — uses bundled EXE in production, Python in dev
 ipcMain.handle('scan-folder', async (event, folderPath) => {
-  return spawnScanner(folderPath, [], (line) => line.includes('Scanning:'));
+  return spawnScanner(folderPath, []);
 });
 
 // Move duplicates — re-runs scanner with --move-duplicates flag
 ipcMain.handle('move-duplicates', async (event, folderPath) => {
-  return spawnScanner(folderPath, ['--move-duplicates'], (line) =>
-    line.includes('Scanning:') || line.includes('Detecting') || line.includes('Moving')
-  );
+  return spawnScanner(folderPath, ['--move-duplicates']);
 });
 
 // Save face_names.json directly to folder
@@ -315,13 +321,80 @@ ipcMain.handle('clear-cache', async (event, folderPath) => {
   return removed;
 });
 
-// Read a thumbnail file as base64 from scan folder
-ipcMain.handle('read-thumbnail', async (event, folderPath, thumbRelPath) => {
+// On-demand thumbnail generation with LRU cache (500MB limit)
+const CACHE_MAX_BYTES = 500 * 1024 * 1024; // 500MB
+
+ipcMain.handle('generate-thumbnail', async (event, folderPath, relPath, size) => {
+  const thumbWidth = size || 200;
+  const thumbsDir = path.join(folderPath, '.cache', 'thumbnails', String(thumbWidth));
+  const thumbRel = relPath.replace(/\.[^.]+$/, '.jpg');
+  const thumbPath = path.join(thumbsDir, thumbRel);
+  const srcPath = path.join(folderPath, relPath);
+
+  // Check if cached thumbnail is still valid
+  if (fs.existsSync(thumbPath)) {
+    try {
+      const srcStat = fs.statSync(srcPath);
+      const thumbStat = fs.statSync(thumbPath);
+      if (thumbStat.mtimeMs >= srcStat.mtimeMs) {
+        const buf = fs.readFileSync(thumbPath);
+        return `data:image/jpeg;base64,${buf.toString('base64')}`;
+      }
+    } catch (_) {}
+  }
+
+  // Generate via sharp-less approach: read, resize in Python would be heavy.
+  // Instead, use Electron nativeImage for fast thumbnail generation.
   try {
-    const fullPath = path.join(folderPath, thumbRelPath);
-    const buf = fs.readFileSync(fullPath);
-    return `data:image/jpeg;base64,${buf.toString('base64')}`;
+    const { nativeImage } = require('electron');
+    const img = nativeImage.createFromPath(srcPath);
+    if (img.isEmpty()) return null;
+    const origSize = img.getSize();
+    if (origSize.width <= 0) return null;
+    const ratio = thumbWidth / origSize.width;
+    const newW = Math.round(origSize.width * Math.min(ratio, 1));
+    const newH = Math.round(origSize.height * Math.min(ratio, 1));
+    const resized = img.resize({ width: newW, height: newH, quality: 'good' });
+    const jpegBuf = resized.toJPEG(75);
+
+    // Write to disk cache
+    const thumbDir = path.dirname(thumbPath);
+    if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
+    fs.writeFileSync(thumbPath, jpegBuf);
+
+    // LRU cache cleanup (async, non-blocking)
+    enforceCacheLimit(path.join(folderPath, '.cache', 'thumbnails'));
+
+    return `data:image/jpeg;base64,${jpegBuf.toString('base64')}`;
   } catch (_) {
     return null;
   }
 });
+
+function enforceCacheLimit(cacheDir) {
+  try {
+    if (!fs.existsSync(cacheDir)) return;
+    const files = [];
+    const walkDir = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walkDir(full);
+        else {
+          const stat = fs.statSync(full);
+          files.push({ path: full, size: stat.size, atime: stat.atimeMs });
+        }
+      }
+    };
+    walkDir(cacheDir);
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+    if (totalSize <= CACHE_MAX_BYTES) return;
+    // Sort oldest-accessed first
+    files.sort((a, b) => a.atime - b.atime);
+    let freed = 0;
+    const target = totalSize - CACHE_MAX_BYTES;
+    for (const f of files) {
+      if (freed >= target) break;
+      try { fs.unlinkSync(f.path); freed += f.size; } catch (_) {}
+    }
+  } catch (_) {}
+}
