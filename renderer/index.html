@@ -54,6 +54,10 @@
 
   /* Main area */
   .main-content { flex:1; overflow-y:auto; }
+
+  /* Sticky tab bar + tag bar */
+  .tab-bar { display:flex; border-bottom:1px solid var(--border); background:var(--surface); position:sticky; top:0; z-index:50; }
+  .tag-bar { position:sticky; top:38px; z-index:49; }
   .gallery { padding:16px 24px; }
   .date-group { margin-bottom:20px; }
   .date-group h2 { font-size:14px; color:var(--accent); margin-bottom:8px; font-weight:500; }
@@ -132,7 +136,6 @@
   .placeholder-img { width:100%; aspect-ratio:1; background:var(--surface); display:flex; align-items:center; justify-content:center; font-size:36px; }
 
   /* Tabs */
-  .tab-bar { display:flex; border-bottom:1px solid var(--border); background:var(--surface); }
   .tab-bar button { background:none; border:none; color:var(--text2); padding:10px 20px; font-size:13px; cursor:pointer; border-bottom:2px solid transparent; transition:all 0.2s; }
   .tab-bar button:hover { color:var(--text); background:var(--hover); }
   .tab-bar button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
@@ -230,6 +233,13 @@
   .tag-filter-chip { background:var(--card); color:var(--text); font-size:10px; padding:2px 8px; border-radius:10px; cursor:pointer; border:1px solid var(--border); }
   .tag-filter-chip:hover { border-color:var(--accent); }
   .tag-filter-chip.active { background:var(--accent); color:#000; border-color:var(--accent); }
+
+  /* Tag autocomplete dropdown */
+  .tag-autocomplete { position:relative; display:inline-block; }
+  .tag-suggestions { display:none; position:absolute; top:100%; left:0; width:180px; max-height:150px; overflow-y:auto; background:var(--card); border:1px solid var(--border); border-radius:6px; z-index:60; margin-top:2px; }
+  .tag-suggestions.open { display:block; }
+  .tag-suggestions .sug-item { padding:5px 10px; font-size:12px; cursor:pointer; color:var(--text); }
+  .tag-suggestions .sug-item:hover, .tag-suggestions .sug-item.active { background:var(--accent); color:#000; }
 </style>
 </head>
 <body>
@@ -306,12 +316,19 @@
         </select>
       </div>
       <div class="filter-group">
-        <label>View</label>
+        <label>View Mode</label>
         <div class="view-toggle">
-          <button onclick="setGrid('list-view')" id="vList">List</button>
-          <button onclick="setGrid('small')" id="vSmall">S</button>
-          <button onclick="setGrid('')" id="vMed" class="active">M</button>
-          <button onclick="setGrid('large')" id="vLarge">L</button>
+          <button onclick="setViewMode('date')" id="vDate">Date</button>
+          <button onclick="setViewMode('grid')" id="vGrid" class="active">Grid</button>
+          <button onclick="setViewMode('list')" id="vList">List</button>
+        </div>
+      </div>
+      <div class="filter-group" id="gridSizeGroup">
+        <label>Grid Size</label>
+        <div class="view-toggle">
+          <button onclick="setGridSize('small')" id="vSmall">S</button>
+          <button onclick="setGridSize('')" id="vMed" class="active">M</button>
+          <button onclick="setGridSize('large')" id="vLarge">L</button>
         </div>
       </div>
     </div>
@@ -336,7 +353,15 @@
     </div>
     <div class="tag-bar" id="tagBar">
       <span class="sel-count" id="tagSelCount">0 selected</span>
-      <input type="text" class="tag-input" id="tagInput" placeholder="Enter tag..." onkeydown="if(event.key==='Enter')addTagToSelected()">
+      <div class="tag-autocomplete">
+        <input type="text" class="tag-input" id="tagInput" placeholder="Enter tag..."
+          onclick="event.stopPropagation()"
+          oninput="showTagSuggestions()"
+          onkeydown="handleTagKeydown(event)"
+          onfocus="showTagSuggestions()"
+          onblur="setTimeout(()=>hideTagSuggestions(),150)">
+        <div class="tag-suggestions" id="tagSuggestions"></div>
+      </div>
       <button class="btn-tag-add" onclick="addTagToSelected()">+ Add Tag</button>
       <button class="btn-tag-remove" onclick="removeTagFromSelected()">- Remove Tag</button>
       <button class="btn-tag-move" onclick="moveTaggedToFolder()">Move to Folder</button>
@@ -406,6 +431,7 @@ let currentFolder = null;
 let filtered = [];
 let currentLbIndex = -1;
 let gridSize = '';
+let viewMode = 'grid';  // 'date' | 'grid' | 'list'
 let activeTab = 'gallery';
 let TAGS_MAP = {};        // { rel_path: [tag1, tag2] }
 let selectMode = false;   // multi-select mode
@@ -604,68 +630,104 @@ function formatDate(dateStr) {
   } catch (_) { return dateStr; }
 }
 
+function renderCard(f, idx) {
+  let imgTag;
+  if (f.type !== 'video' && currentFolder) {
+    imgTag = `<img class="card-thumb lazy-thumb" data-folder="${currentFolder}" data-rel="${f.rel_path}" alt="${f.name}" src="${f.thumb ? 'data:image/jpeg;base64,' + f.thumb : ''}">`;
+  } else if (f.type === 'video') {
+    imgTag = '<div class="placeholder-img">🎬</div>';
+  } else {
+    imgTag = '<div class="placeholder-img">🖼</div>';
+  }
+  const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
+  const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
+  const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
+  const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
+  const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
+  const checkMark = isSelected ? '✓' : '';
+  const folderName = getFolderFromRel(f.rel_path);
+  const shortDate = formatDate(f.date);
+  // Use data attributes for click handling (avoids string escaping bugs in onclick)
+  return `<div class="${selClass}" data-idx="${idx}" data-rel="${f.rel_path}">
+    <div class="select-check">${checkMark}</div>
+    ${imgTag}${videoBadge}${faceBadge}
+    <div class="info">
+      <div class="name" title="${f.rel_path}">${f.name}</div>
+      <div class="card-footer">
+        <span class="card-left">${folderName ? '<span class="folder-name">' + folderName + '</span> · ' : ''}${shortDate}</span>
+        <span class="card-right">${f.size_mb} MB</span>
+      </div>
+      ${tagPills ? '<div style="margin-top:2px;">' + tagPills + '</div>' : ''}
+    </div>
+  </div>`;
+}
+
+function getGridClass() {
+  if (viewMode === 'list') return 'grid list-view';
+  return `grid ${gridSize}`;
+}
+
 function render() {
   const gallery = document.getElementById('gallery');
   document.getElementById('stats').textContent = `${filtered.length} of ${DATA.length} files`;
+  galleryFocusIdx = -1;
 
   if (filtered.length === 0) {
     gallery.innerHTML = '<div class="no-results">No files match your filters.</div>';
     return;
   }
 
-  const groups = {};
-  filtered.forEach(f => { if (!groups[f.day]) groups[f.day] = []; groups[f.day].push(f); });
-
   let html = '';
-  Object.keys(groups).sort().reverse().forEach(day => {
-    html += `<div class="date-group"><h2>${day} — ${groups[day].length} files</h2><div class="grid ${gridSize}">`;
-    groups[day].forEach(f => {
-      const idx = filtered.indexOf(f);
-      // Thumbnail: on-demand generation for images, placeholder for videos
-      let imgTag;
-      if (f.type !== 'video' && currentFolder) {
-        // Lazy-loaded on-demand via IntersectionObserver
-        imgTag = `<img class="card-thumb lazy-thumb" data-folder="${currentFolder}" data-rel="${f.rel_path}" alt="${f.name}" src="${f.thumb ? 'data:image/jpeg;base64,' + f.thumb : ''}">`;
-      } else if (f.type === 'video') {
-        imgTag = '<div class="placeholder-img">🎬</div>';
-      } else {
-        imgTag = '<div class="placeholder-img">🖼</div>';
-      }
-      const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
-      const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
-      const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
-      const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
-      const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
-      const checkMark = isSelected ? '✓' : '';
-      const clickAction = selectMode
-        ? `togglePhotoSelect('${f.rel_path.replace(/'/g, "\\'")}')`
-        : `openLightbox(${idx})`;
-      const folderName = getFolderFromRel(f.rel_path);
-      const shortDate = formatDate(f.date);
-      html += `<div class="${selClass}" onclick="${clickAction}">
-        <div class="select-check">${checkMark}</div>
-        ${imgTag}${videoBadge}${faceBadge}
-        <div class="info">
-          <div class="name" title="${f.rel_path}">${f.name}</div>
-          <div class="card-footer">
-            <span class="card-left">${folderName ? '<span class="folder-name">' + folderName + '</span> · ' : ''}${shortDate}</span>
-            <span class="card-right">${f.size_mb} MB</span>
-          </div>
-          ${tagPills ? '<div style="margin-top:2px;">' + tagPills + '</div>' : ''}
-        </div>
-      </div>`;
+  const gc = getGridClass();
+
+  if (viewMode === 'date') {
+    // Date View: group by day
+    const groups = {};
+    filtered.forEach(f => { if (!groups[f.day]) groups[f.day] = []; groups[f.day].push(f); });
+    Object.keys(groups).sort().reverse().forEach(day => {
+      html += `<div class="date-group"><h2>${day} — ${groups[day].length} files</h2><div class="${gc}">`;
+      groups[day].forEach(f => { html += renderCard(f, filtered.indexOf(f)); });
+      html += '</div></div>';
     });
-    html += '</div></div>';
-  });
+  } else {
+    // Grid View / List View: flat layout, no date grouping
+    html += `<div class="${gc}">`;
+    filtered.forEach((f, i) => { html += renderCard(f, i); });
+    html += '</div>';
+  }
+
   gallery.innerHTML = html;
+
+  // Event delegation for card clicks (Part 4 fix: avoids broken onclick strings)
+  gallery.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      // Don't trigger on tag-input clicks
+      if (e.target.closest('.tag-autocomplete') || e.target.tagName === 'INPUT') return;
+      const rel = card.dataset.rel;
+      const idx = parseInt(card.dataset.idx);
+      if (selectMode) {
+        if (SELECTED_PHOTOS.has(rel)) SELECTED_PHOTOS.delete(rel);
+        else SELECTED_PHOTOS.add(rel);
+        updateTagSelCount();
+        // Update just this card's visual state (no full re-render)
+        card.classList.toggle('selected');
+        const check = card.querySelector('.select-check');
+        if (check) check.textContent = SELECTED_PHOTOS.has(rel) ? '✓' : '';
+      } else {
+        openLightbox(idx);
+      }
+    });
+  });
+
   initLazyThumbs();
 }
 
 // Dynamic thumbnail size based on grid mode
 function getThumbSize() {
+  if (viewMode === 'list') return 150;
   if (gridSize === 'small') return 150;
   if (gridSize === 'large') return 300;
-  return 200; // medium / list-view
+  return 200;
 }
 
 // On-demand lazy thumbnail generation via IntersectionObserver + client queue
@@ -927,11 +989,24 @@ async function saveFaceNames() {
 }
 
 // ---- Grid & Reset ----
-function setGrid(size) {
+function setViewMode(mode) {
+  viewMode = mode;
+  document.querySelectorAll('#vDate,#vGrid,#vList').forEach(b => b.classList.remove('active'));
+  document.getElementById('v' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
+  // Show grid size controls only for grid mode
+  document.getElementById('gridSizeGroup').style.display = mode === 'grid' ? '' : 'none';
+  if (mode === 'list') gridSize = 'list-view';
+  else if (mode === 'grid') {
+    // Restore grid size from buttons
+    if (gridSize === 'list-view') gridSize = '';
+  }
+  render();
+}
+
+function setGridSize(size) {
   gridSize = size;
-  document.querySelectorAll('.view-toggle button').forEach(b => b.classList.remove('active'));
-  if (size === 'list-view') document.getElementById('vList').classList.add('active');
-  else if (size === 'small') document.getElementById('vSmall').classList.add('active');
+  document.querySelectorAll('#vSmall,#vMed,#vLarge').forEach(b => b.classList.remove('active'));
+  if (size === 'small') document.getElementById('vSmall').classList.add('active');
   else if (size === 'large') document.getElementById('vLarge').classList.add('active');
   else document.getElementById('vMed').classList.add('active');
   render();
@@ -1001,13 +1076,6 @@ function exitSelectMode() {
   render();
 }
 
-function togglePhotoSelect(relPath) {
-  if (SELECTED_PHOTOS.has(relPath)) SELECTED_PHOTOS.delete(relPath);
-  else SELECTED_PHOTOS.add(relPath);
-  updateTagSelCount();
-  render();
-}
-
 function updateTagSelCount() {
   const el = document.getElementById('tagSelCount');
   if (el) el.textContent = `${SELECTED_PHOTOS.size} selected`;
@@ -1056,6 +1124,71 @@ async function persistTags() {
   try {
     await window.api.saveTags(currentFolder, TAGS_MAP);
   } catch (_) {}
+}
+
+// ---- Tag Autocomplete ----
+function getAllExistingTags() {
+  return [...new Set(DATA.flatMap(f => f.tags || []))].sort();
+}
+
+let sugIdx = -1; // active suggestion index
+function showTagSuggestions() {
+  const input = document.getElementById('tagInput');
+  const dropdown = document.getElementById('tagSuggestions');
+  const query = input.value.trim().toLowerCase();
+  sugIdx = -1;
+  if (!query) { dropdown.classList.remove('open'); return; }
+  const allTags = getAllExistingTags();
+  const matches = allTags.filter(t => t.includes(query) && t !== query);
+  if (matches.length === 0) { dropdown.classList.remove('open'); return; }
+  dropdown.innerHTML = matches.map((t, i) =>
+    `<div class="sug-item" data-tag="${t}" onmousedown="pickTagSuggestion('${t}')">${t}</div>`
+  ).join('');
+  dropdown.classList.add('open');
+}
+
+function hideTagSuggestions() {
+  document.getElementById('tagSuggestions').classList.remove('open');
+  sugIdx = -1;
+}
+
+function pickTagSuggestion(tag) {
+  document.getElementById('tagInput').value = tag;
+  hideTagSuggestions();
+  addTagToSelected();
+}
+
+function handleTagKeydown(e) {
+  const dropdown = document.getElementById('tagSuggestions');
+  const items = dropdown.querySelectorAll('.sug-item');
+  if (dropdown.classList.contains('open') && items.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      sugIdx = Math.min(sugIdx + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('active', i === sugIdx));
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      sugIdx = Math.max(sugIdx - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('active', i === sugIdx));
+      return;
+    }
+    if (e.key === 'Enter' && sugIdx >= 0 && items[sugIdx]) {
+      e.preventDefault();
+      pickTagSuggestion(items[sugIdx].dataset.tag);
+      return;
+    }
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addTagToSelected();
+  }
+  if (e.key === 'Escape') {
+    hideTagSuggestions();
+  }
+  // Stop propagation so keyboard shortcuts don't fire while typing
+  e.stopPropagation();
 }
 
 function moveTaggedToFolder() {
