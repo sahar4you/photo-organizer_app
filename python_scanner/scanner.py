@@ -289,13 +289,16 @@ def _collect_media_files(folder):
     folder = Path(folder)
     media_files = []
     for dirpath, dirnames, filenames in os.walk(folder):
-        # Skip __duplicates__ and .cache directories
-        dirnames[:] = [d for d in dirnames if d not in (DUPLICATES_DIR, CACHE_DIR)]
+        # Skip __duplicates__ directory (keep .cache accessible for app logic)
+        dirnames[:] = [d for d in dirnames if d != DUPLICATES_DIR]
         for name in filenames:
             ext = Path(name).suffix.lower()
             if ext in MEDIA_EXTENSIONS:
                 abs_path = Path(dirpath) / name
                 rel_path = str(abs_path.relative_to(folder))
+                # Hide .cache files from scan results
+                if rel_path.startswith(CACHE_DIR + os.sep) or rel_path.startswith(CACHE_DIR + '/'):
+                    continue
                 media_files.append((abs_path, rel_path))
     return sorted(media_files, key=lambda x: x[1])
 
@@ -314,8 +317,16 @@ def scan_folder(folder):
     face_cascade, profile_cascade = None, None
     all_face_data = []
     if HAS_FACE:
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
-        profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml'
+        profile_path = cv2.data.haarcascades + 'haarcascade_profileface.xml'
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        profile_cascade = cv2.CascadeClassifier(profile_path)
+        if face_cascade.empty():
+            log(f"Warning: Failed to load frontal cascade from {cascade_path}")
+            face_cascade = None
+        if profile_cascade is not None and profile_cascade.empty():
+            log(f"Warning: Failed to load profile cascade from {profile_path}")
+            profile_cascade = None
 
     for i, (filepath, rel_path) in enumerate(all_media):
         name = filepath.name
