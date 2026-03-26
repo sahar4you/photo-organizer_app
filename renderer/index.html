@@ -125,7 +125,11 @@
   .lightbox .lb-next { right:14px; }
   .lb-info { color:var(--text); padding:14px; text-align:center; max-width:600px; }
   .lb-info .lb-name { font-size:15px; font-weight:600; }
-  .lb-info .lb-meta { font-size:12px; color:var(--text2); margin-top:4px; line-height:1.5; }
+  .lb-info .lb-meta { font-size:12px; color:var(--text2); margin-top:4px; line-height:1.8; }
+  .lb-meta .lb-section { margin-top:4px; }
+  .lb-meta .lb-breakdown { font-size:11px; color:var(--text2); white-space:nowrap; display:inline-block; }
+  .lb-meta .lb-reason { font-size:11px; color:var(--text2); font-style:italic; }
+  .lb-meta .lb-usage { font-size:11px; color:var(--accent2); }
 
   /* Face Manager Modal */
   .modal-overlay { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); z-index:450; justify-content:center; align-items:center; }
@@ -527,6 +531,11 @@ async function scanCurrentFolder() {
     DUP_GROUPS = result.duplicate_groups || null;
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
+    // Debug: verify resolution data flow (remove after verification)
+    if (DATA.length > 0) {
+      const sample = DATA.find(f => f.type === 'image') || DATA[0];
+      console.log('[DEBUG] Sample file data:', { name: sample.name, width: sample.width, height: sample.height, resolution: sample.resolution, quality_score: sample.quality_score, quality_label: sample.quality_label });
+    }
     // Load persisted ignored groups
     try {
       const ignored = await window.api.loadIgnoredGroups(currentFolder);
@@ -754,10 +763,17 @@ function qualityReason(sharpness, resScore, sizeScore) {
   return reason.charAt(0).toUpperCase() + reason.slice(1);
 }
 
-function qualityBreakdownHtml(f) {
+function qualityBreakdownLine(f) {
   if (f.quality_score == null) return '';
   const sh = f.sharpness ?? 0, rs = f.resolution_score ?? 0, sz = f.size_score ?? 0;
-  return `${scoreIcon(sh)} Sharpness: ${scoreLabel(sh)} (${sh}) · ${scoreIcon(rs)} Resolution Score: ${scoreLabel(rs)} (${rs}) · ${scoreIcon(sz)} File Size Score: ${scoreLabel(sz)} (${sz})`;
+  return `${scoreIcon(sh)} Sharpness: ${scoreLabel(sh)} (${sh}) · ${scoreIcon(rs)} Resolution: ${scoreLabel(rs)} (${rs}) · ${scoreIcon(sz)} Size: ${scoreLabel(sz)} (${sz})`;
+}
+
+function qualityBreakdownHtml(f) {
+  // Plain text version for tooltips (no HTML)
+  if (f.quality_score == null) return '';
+  const sh = f.sharpness ?? 0, rs = f.resolution_score ?? 0, sz = f.size_score ?? 0;
+  return `Sharpness: ${scoreLabel(sh)} (${sh}) · Resolution: ${scoreLabel(rs)} (${rs}) · Size: ${scoreLabel(sz)} (${sz})`;
 }
 
 function renderCard(f, idx) {
@@ -779,7 +795,7 @@ function renderCard(f, idx) {
     ? `Quality: ${qScore}/100 — ${qCat}\n${qualityBreakdownHtml(f)}\nReason: ${qualityReason(f.sharpness, f.resolution_score, f.size_score)}`
     : '');
   const qualityBadge = (!isVideo && qScore != null)
-    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="${qTip}">Q:${qScore}</div>` : '';
+    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="${qTip}">${scoreIcon(qScore)} ${qScore}</div>` : '';
   const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
@@ -940,32 +956,31 @@ async function openLightbox(idx) {
   if (folderPath) meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
   // 2. Date · Size · Type
   meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
-  // 3. Resolution with MP
+  // 3. Resolution with MP + Usage
   const resFull = formatResolution(f);
-  if (resFull) meta += `<br>${resFull}`;
-  // 4. Usage label
   const usage = usageLabel(f);
-  if (usage) meta += `<br><span style="font-size:11px;color:var(--accent2);">${usage}</span>`;
-  // 5. Camera
-  if (f.camera && f.camera !== 'Unknown') meta += `<br>Camera: ${f.camera}`;
-  // 6. Quality block
-  if (f.type === 'video') {
-    meta += '<br>Type: Video';
-  } else if (f.quality_score != null) {
-    meta += `<br>Quality: <b>Q:${f.quality_score} (${f.quality_label||''})</b>`;
-    const sh = f.sharpness ?? 0, rs = f.resolution_score ?? 0, sz = f.size_score ?? 0;
-    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(sh)} Sharpness: ${scoreLabel(sh)} (${sh})</span>`;
-    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(rs)} Resolution Score: ${scoreLabel(rs)} (${rs})</span>`;
-    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(sz)} File Size Score: ${scoreLabel(sz)} (${sz})</span>`;
-    const reason = qualityReason(f.sharpness, f.resolution_score, f.size_score);
-    if (reason) meta += `<br><span style="font-size:11px;color:var(--text2);">Reason: ${reason}</span>`;
+  if (resFull) {
+    meta += `<div class="lb-section">${resFull}`;
+    if (usage) meta += `<br><span class="lb-usage">${usage}</span>`;
+    meta += '</div>';
   }
-  // 7. Faces
-  if (f.faces && f.faces.length > 0) meta += `<br>👤 ${f.faces.join(', ')}`;
-  // 8. Tags
-  if (f.tags && f.tags.length > 0) meta += `<br>Tags: ${f.tags.join(', ')}`;
-  // 9. GPS
-  if (f.has_gps) meta += `<br>📍 ${f.gps_lat}, ${f.gps_lon}`;
+  // 4. Camera
+  if (f.camera && f.camera !== 'Unknown') meta += `Camera: ${f.camera}<br>`;
+  // 5. Quality block — single-line breakdown
+  if (f.type === 'video') {
+    meta += '<div class="lb-section">Type: Video</div>';
+  } else if (f.quality_score != null) {
+    meta += `<div class="lb-section">Quality: <b>Q:${f.quality_score} (${f.quality_label||''})</b></div>`;
+    meta += `<span class="lb-breakdown">${qualityBreakdownLine(f)}</span>`;
+    const reason = qualityReason(f.sharpness, f.resolution_score, f.size_score);
+    if (reason) meta += `<br><span class="lb-reason">Reason: ${reason}</span>`;
+  }
+  // 6. Faces
+  if (f.faces && f.faces.length > 0) meta += `<div class="lb-section">👤 ${f.faces.join(', ')}</div>`;
+  // 7. Tags
+  if (f.tags && f.tags.length > 0) meta += `<div class="lb-section">Tags: ${f.tags.join(', ')}</div>`;
+  // 8. GPS
+  if (f.has_gps) meta += `<div class="lb-section">📍 ${f.gps_lat}, ${f.gps_lon}</div>`;
   document.getElementById('lbMeta').innerHTML = meta;
 
   lb.classList.add('open');
