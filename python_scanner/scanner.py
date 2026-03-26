@@ -346,19 +346,22 @@ def scan_folder(folder):
             if model: camera = f"{camera} {model}".strip()
             w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
             h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
+            # Convert EXIF values (may be tuples/IFDRational) to int safely
+            try:
+                w2 = int(w2) if w2 else 0
+                h2 = int(h2) if h2 else 0
+            except (ValueError, TypeError):
+                w2, h2 = 0, 0
             # Fallback: read actual image dimensions via PIL if EXIF is missing
             if (not w2 or not h2) and HAS_PIL:
                 try:
                     with Image.open(str(filepath)) as pil_img:
                         w2, h2 = pil_img.size
                 except Exception:
-                    pass
+                    w2, h2 = 0, 0
             if w2 and h2:
-                try:
-                    img_width, img_height = int(w2), int(h2)
-                    resolution = f"{img_width}x{img_height}"
-                except (ValueError, TypeError):
-                    pass
+                img_width, img_height = w2, h2
+                resolution = f"{img_width}x{img_height}"
             gps_info = exif.get('GPSInfo')
             if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
 

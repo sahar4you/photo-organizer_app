@@ -302,7 +302,12 @@
       </div>
       <div class="filter-group">
         <label>Resolution</label>
-        <select id="filterRes"><option value="">All Resolutions</option></select>
+        <select id="filterRes">
+          <option value="">All Resolutions</option>
+          <option value="hd">HD+ (1+ MP)</option>
+          <option value="fhd">Full HD+ (2+ MP)</option>
+          <option value="4k">4K+ (8+ MP)</option>
+        </select>
       </div>
       <div class="filter-group">
         <label>👤 Person / Face</label>
@@ -354,6 +359,11 @@
           <button onclick="setGridSize('')" id="vMed" class="active">M</button>
           <button onclick="setGridSize('large')" id="vLarge">L</button>
         </div>
+      </div>
+      <div class="filter-group">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;">
+          <input type="checkbox" id="settingShowFolder" checked onchange="toggleFolderDisplay()"> Show Folder Path
+        </label>
       </div>
     </div>
     <div class="sidebar-actions">
@@ -491,6 +501,7 @@ let activeTab = 'gallery';
 let TAGS_MAP = {};        // { rel_path: [tag1, tag2] }
 let selectMode = false;   // multi-select mode
 let SELECTED_PHOTOS = new Set(); // rel_paths of selected photos
+let showFolderName = localStorage.getItem('showFolderName') !== 'false'; // default: true
 
 // ---- Folder picking & scanning ----
 async function pickFolder() {
@@ -580,11 +591,9 @@ async function scanCurrentFolder() {
 function populateFilters() {
   const months = [...new Set(DATA.map(f => f.month))].sort().reverse();
   const cameras = [...new Set(DATA.map(f => f.camera))].sort();
-  const resolutions = [...new Set(DATA.map(f => f.resolution))].filter(r => r !== 'Unknown').sort();
 
   fillSelect('filterMonth', months);
   fillSelect('filterCamera', cameras);
-  fillSelect('filterRes', resolutions);
   refreshFaceUI();
   refreshTagUI();
 }
@@ -652,7 +661,12 @@ function applyFilters() {
     if (type && f.type !== type) return false;
     if (!matchSize(f.size_mb, size)) return false;
     if (camera && f.camera !== camera) return false;
-    if (res && f.resolution !== res) return false;
+    if (res) {
+      const { mp } = getFileDims(f);
+      if (res === 'hd' && mp < 1) return false;
+      if (res === 'fhd' && mp < 2) return false;
+      if (res === '4k' && mp < 8) return false;
+    }
     if (face === '__has_face__' && (!f.faces || f.faces.length === 0)) return false;
     if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
     if (face && face !== '__has_face__' && face !== '__no_face__' && (!f.faces || !f.faces.includes(face))) return false;
@@ -796,7 +810,7 @@ function renderCard(f, idx) {
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
   const checkMark = isSelected ? '✓' : '';
-  const folderName = getFolderFromRel(f.rel_path);
+  const folderName = showFolderName ? getFolderFromRel(f.rel_path) : '';
   const shortDate = formatDate(f.date);
   const resFmt = formatResolution(f);
   const listQuality = `<span class="list-quality" title="${qTip}">${qLabel}</span>`;
@@ -946,10 +960,12 @@ async function openLightbox(idx) {
   }
 
   document.getElementById('lbName').textContent = f.name;
-  const folderPath = getFolderFromRel(f.rel_path) || 'Root';
   let meta = '';
-  // 1. Folder path
-  meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+  // 1. Folder path (respects setting)
+  if (showFolderName) {
+    const folderPath = getFolderFromRel(f.rel_path) || 'Root';
+    meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+  }
   // 2. Date · Size · Type
   meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
   // 3. Resolution with MP + Usage
@@ -1198,6 +1214,17 @@ function resetFilters() {
 ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','filterQuality','sortBy'].forEach(id => {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
+});
+
+// ---- Settings ----
+function toggleFolderDisplay() {
+  showFolderName = document.getElementById('settingShowFolder').checked;
+  localStorage.setItem('showFolderName', showFolderName);
+  render();
+}
+// Restore setting on load
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('settingShowFolder').checked = showFolderName;
 });
 
 // ---- Tag System ----
