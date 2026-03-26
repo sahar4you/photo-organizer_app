@@ -321,15 +321,66 @@ ipcMain.handle('clear-cache', async (event, folderPath) => {
   return removed;
 });
 
-// On-demand thumbnail generation with LRU cache (500MB limit)
+// ---- Thumbnail generation with concurrency control + LRU cache ----
+
 const CACHE_MAX_BYTES = 500 * 1024 * 1024; // 500MB
+const THUMB_MAX_CONCURRENT = 4;
+const THUMB_SIZES = [150, 200, 300]; // known thumbnail widths
+
+// Concurrency queue state
+let thumbActive = 0;
+const thumbQueue = [];             // FIFO queue of { resolve, reject, args }
+const thumbInProgress = new Map(); // key -> Promise (dedup in-flight requests)
+
+function thumbCacheKey(folderPath, relPath, size) {
+  return `${folderPath}|${relPath}|${size}`;
+}
+
+function processThumbQueue() {
+  while (thumbActive < THUMB_MAX_CONCURRENT && thumbQueue.length > 0) {
+    const task = thumbQueue.shift();
+    thumbActive++;
+    doGenerateThumbnail(...task.args)
+      .then(task.resolve)
+      .catch(task.reject)
+      .finally(() => {
+        thumbActive--;
+        const key = thumbCacheKey(...task.args);
+        thumbInProgress.delete(key);
+        processThumbQueue();
+      });
+  }
+}
 
 ipcMain.handle('generate-thumbnail', async (event, folderPath, relPath, size) => {
+  const key = thumbCacheKey(folderPath, relPath, size);
+  // Dedup: reuse in-flight promise for same request
+  if (thumbInProgress.has(key)) {
+    return thumbInProgress.get(key);
+  }
+  const promise = new Promise((resolve, reject) => {
+    thumbQueue.push({ resolve, reject, args: [folderPath, relPath, size] });
+    processThumbQueue();
+  });
+  thumbInProgress.set(key, promise);
+  return promise;
+});
+
+async function doGenerateThumbnail(folderPath, relPath, size) {
   const thumbWidth = size || 200;
   const thumbsDir = path.join(folderPath, '.cache', 'thumbnails', String(thumbWidth));
   const thumbRel = relPath.replace(/\.[^.]+$/, '.jpg');
   const thumbPath = path.join(thumbsDir, thumbRel);
   const srcPath = path.join(folderPath, relPath);
+
+  // Part 2: Check if source file still exists
+  if (!fs.existsSync(srcPath)) {
+    // Delete stale thumbnail if it exists
+    if (fs.existsSync(thumbPath)) {
+      try { fs.unlinkSync(thumbPath); } catch (_) {}
+    }
+    return null;
+  }
 
   // Check if cached thumbnail is still valid
   if (fs.existsSync(thumbPath)) {
@@ -343,8 +394,20 @@ ipcMain.handle('generate-thumbnail', async (event, folderPath, relPath, size) =>
     } catch (_) {}
   }
 
-  // Generate via sharp-less approach: read, resize in Python would be heavy.
-  // Instead, use Electron nativeImage for fast thumbnail generation.
+  // Part 3: Reuse a larger cached thumbnail if available
+  const largerDataUrl = tryReuseLargerThumb(folderPath, relPath, thumbWidth);
+  if (largerDataUrl) {
+    // Write the resized version to disk for next time
+    try {
+      const thumbDir = path.dirname(thumbPath);
+      if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
+      const base64Data = largerDataUrl.replace(/^data:image\/jpeg;base64,/, '');
+      fs.writeFileSync(thumbPath, Buffer.from(base64Data, 'base64'));
+    } catch (_) {}
+    return largerDataUrl;
+  }
+
+  // Generate from original using Electron nativeImage
   try {
     const { nativeImage } = require('electron');
     const img = nativeImage.createFromPath(srcPath);
@@ -362,13 +425,68 @@ ipcMain.handle('generate-thumbnail', async (event, folderPath, relPath, size) =>
     if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
     fs.writeFileSync(thumbPath, jpegBuf);
 
-    // LRU cache cleanup (async, non-blocking)
-    enforceCacheLimit(path.join(folderPath, '.cache', 'thumbnails'));
+    // LRU cache cleanup (non-blocking)
+    setImmediate(() => enforceCacheLimit(path.join(folderPath, '.cache', 'thumbnails')));
 
     return `data:image/jpeg;base64,${jpegBuf.toString('base64')}`;
   } catch (_) {
     return null;
   }
+}
+
+// Part 3: Try to find and resize a larger cached thumbnail
+function tryReuseLargerThumb(folderPath, relPath, targetWidth) {
+  const thumbRel = relPath.replace(/\.[^.]+$/, '.jpg');
+  // Check larger sizes in descending order
+  const larger = THUMB_SIZES.filter(s => s > targetWidth).sort((a, b) => a - b);
+  for (const bigSize of larger) {
+    const bigPath = path.join(folderPath, '.cache', 'thumbnails', String(bigSize), thumbRel);
+    if (fs.existsSync(bigPath)) {
+      try {
+        const { nativeImage } = require('electron');
+        const img = nativeImage.createFromPath(bigPath);
+        if (img.isEmpty()) continue;
+        const origSize = img.getSize();
+        const ratio = targetWidth / origSize.width;
+        const newW = Math.round(origSize.width * Math.min(ratio, 1));
+        const newH = Math.round(origSize.height * Math.min(ratio, 1));
+        const resized = img.resize({ width: newW, height: newH, quality: 'good' });
+        return `data:image/jpeg;base64,${resized.toJPEG(75).toString('base64')}`;
+      } catch (_) { continue; }
+    }
+  }
+  return null;
+}
+
+// Part 2: Clean stale thumbnails (orphans whose source no longer exists)
+ipcMain.handle('cleanup-stale-thumbnails', async (event, folderPath, validRelPaths) => {
+  const thumbsRoot = path.join(folderPath, '.cache', 'thumbnails');
+  if (!fs.existsSync(thumbsRoot)) return 0;
+  const validSet = new Set(validRelPaths.map(r => r.replace(/\.[^.]+$/, '.jpg')));
+  let removed = 0;
+  const walkAndClean = (dir, baseDir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkAndClean(full, baseDir);
+        // Remove empty dirs
+        try { if (fs.readdirSync(full).length === 0) fs.rmdirSync(full); } catch (_) {}
+      } else {
+        const rel = path.relative(baseDir, full).replace(/\\/g, '/');
+        if (!validSet.has(rel)) {
+          try { fs.unlinkSync(full); removed++; } catch (_) {}
+        }
+      }
+    }
+  };
+  // Clean each size directory
+  for (const entry of fs.readdirSync(thumbsRoot, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      walkAndClean(path.join(thumbsRoot, entry.name), path.join(thumbsRoot, entry.name));
+    }
+  }
+  return removed;
 });
 
 function enforceCacheLimit(cacheDir) {
