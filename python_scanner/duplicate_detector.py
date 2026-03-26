@@ -35,9 +35,25 @@ CHUNK_SIZE = 65536  # 64KB
 # Cache management
 # ---------------------------------------------------------------------------
 
+def _cache_path(folder):
+    """Return path to hash_cache.json, preferring .cache/data/ location."""
+    new_path = Path(folder) / ".cache" / "data" / "hash_cache.json"
+    old_path = Path(folder) / "hash_cache.json"
+    # Migrate old to new if needed
+    if old_path.exists() and not new_path.exists():
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            old_path.rename(new_path)
+        except OSError:
+            import shutil
+            shutil.copy2(str(old_path), str(new_path))
+            old_path.unlink()
+    return new_path
+
+
 def load_hash_cache(folder):
-    """Load hash_cache.json from folder. Return empty structure if missing."""
-    cache_path = Path(folder) / "hash_cache.json"
+    """Load hash_cache.json. Return empty structure if missing."""
+    cache_path = _cache_path(folder)
     if cache_path.exists():
         try:
             with open(cache_path, "r") as f:
@@ -50,8 +66,9 @@ def load_hash_cache(folder):
 
 
 def save_hash_cache(folder, cache):
-    """Persist hash cache to hash_cache.json in folder."""
-    cache_path = Path(folder) / "hash_cache.json"
+    """Persist hash cache to .cache/data/hash_cache.json."""
+    cache_path = _cache_path(folder)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache["root"] = str(folder)
     try:
         with open(cache_path, "w") as f:

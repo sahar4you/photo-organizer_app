@@ -467,8 +467,10 @@ def scan_folder(folder):
     for f in files:
         f.pop("sharpness_raw", None)
 
-    # Load and apply photo tags
-    tags_path = folder / "photo_tags.json"
+    # Load and apply photo tags (check .cache/data/ first, then root for backward compat)
+    tags_path = folder / ".cache" / "data" / "photo_tags.json"
+    if not tags_path.exists():
+        tags_path = folder / "photo_tags.json"
     if tags_path.exists():
         try:
             with open(tags_path) as f:
@@ -488,7 +490,9 @@ def scan_folder(folder):
                 files[file_idx]["faces"] = persons
 
     # Load and apply name mappings
-    name_map_path = folder / "face_names.json"
+    name_map_path = folder / ".cache" / "data" / "face_names.json"
+    if not name_map_path.exists():
+        name_map_path = folder / "face_names.json"
     name_map = {}
     if name_map_path.exists():
         try:

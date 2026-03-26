@@ -248,6 +248,17 @@
   .tag-filter-chip:hover { border-color:var(--accent); }
   .tag-filter-chip.active { background:var(--accent); color:#000; border-color:var(--accent); }
 
+  /* Faces panel */
+  .faces-panel { padding:20px 24px; display:none; }
+  .faces-panel.open { display:block; }
+  .faces-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:12px; }
+  .face-card { background:var(--card); border-radius:8px; padding:10px; text-align:center; cursor:pointer; border:2px solid transparent; transition:border-color 0.2s; }
+  .face-card:hover { border-color:var(--accent); }
+  .face-card img { width:64px; height:64px; border-radius:50%; object-fit:cover; display:block; margin:0 auto 6px; }
+  .face-card .face-placeholder { width:64px; height:64px; border-radius:50%; background:var(--surface); display:flex; align-items:center; justify-content:center; font-size:28px; margin:0 auto 6px; }
+  .face-card .face-label { font-size:11px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .face-card .face-count { font-size:10px; color:var(--text2); margin-top:2px; }
+
   /* Tag autocomplete dropdown */
   .tag-autocomplete { position:relative; display:inline-block; }
   .tag-suggestions { display:none; position:absolute; top:100%; left:0; width:180px; max-height:150px; overflow-y:auto; background:var(--card); border:1px solid var(--border); border-radius:6px; z-index:60; margin-top:2px; }
@@ -376,6 +387,7 @@
     <div class="tab-bar" id="tabBar" style="display:none;">
       <button class="active" onclick="switchTab('gallery')">Gallery</button>
       <button onclick="switchTab('duplicates')">Duplicates <span class="dup-badge" id="dupBadge" style="display:none;">0</span></button>
+      <button onclick="switchTab('faces')">Faces <span class="dup-badge" id="facesBadge" style="display:none;">0</span></button>
     </div>
     <div class="tag-bar" id="tagBar">
       <span class="sel-count" id="tagSelCount">0 selected</span>
@@ -396,6 +408,7 @@
     </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
     <div class="dup-panel" id="dupPanel"></div>
+    <div class="faces-panel" id="facesPanel"></div>
   </main>
 </div>
 
@@ -609,7 +622,9 @@ async function scanCurrentFolder() {
     populateFilters();
     applyFilters();
     updateDupBadge();
+    updateFacesBadge();
     if (activeTab === 'duplicates') renderDuplicates();
+    if (activeTab === 'faces') renderFacesPanel();
 
     // Clean stale thumbnails in background
     const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
@@ -1127,7 +1142,10 @@ async function previewTrashSelected() {
   listHtml += '</div>';
   listHtml += `<p style="font-size:12px;margin-top:8px;">${items.length} file(s) will be sent to the recycle bin.</p>`;
   openConfirm('Trash Selected Photos', listHtml, 'Send to Trash', 'btn-save', async () => {
-    const paths = items.map(rel => currentFolder + '/' + rel);
+    const paths = items.map(rel => {
+      const f = DATA.find(d => d.rel_path === rel);
+      return f ? f.path : currentFolder + '/' + rel;
+    });
     document.getElementById('loadingOverlay').classList.add('open');
     document.getElementById('progressText').textContent = 'Sending to trash...';
     try {
@@ -1510,15 +1528,21 @@ function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
   const buttons = document.querySelectorAll('.tab-bar button');
+  // Hide all panels
+  document.getElementById('gallery').style.display = 'none';
+  document.getElementById('dupPanel').classList.remove('open');
+  document.getElementById('facesPanel').classList.remove('open');
   if (tab === 'gallery') {
     buttons[0].classList.add('active');
     document.getElementById('gallery').style.display = '';
-    document.getElementById('dupPanel').classList.remove('open');
-  } else {
+  } else if (tab === 'duplicates') {
     buttons[1].classList.add('active');
-    document.getElementById('gallery').style.display = 'none';
     document.getElementById('dupPanel').classList.add('open');
     renderDuplicates();
+  } else if (tab === 'faces') {
+    buttons[2].classList.add('active');
+    document.getElementById('facesPanel').classList.add('open');
+    renderFacesPanel();
   }
 }
 
@@ -1534,6 +1558,63 @@ function updateDupBadge() {
   } else {
     badge.style.display = 'none';
   }
+}
+
+// ---- Faces Panel ----
+function updateFacesBadge() {
+  const badge = document.getElementById('facesBadge');
+  const persons = [...new Set(DATA.flatMap(f => f.faces || []))].filter(Boolean);
+  if (persons.length > 0) {
+    badge.textContent = persons.length;
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function renderFacesPanel() {
+  const panel = document.getElementById('facesPanel');
+  const persons = [...new Set(DATA.flatMap(f => f.faces || []))].filter(Boolean).sort((a, b) => {
+    const na = parseInt(a.replace('Person ', '')) || 0;
+    const nb = parseInt(b.replace('Person ', '')) || 0;
+    if (na && nb) return na - nb;
+    return a.localeCompare(b);
+  });
+
+  if (persons.length === 0) {
+    panel.innerHTML = '<div class="no-dups"><div class="big-icon">👤</div><p>No faces detected.<br>Scan a folder with photos of people.</p></div>';
+    return;
+  }
+
+  // Count photos per person
+  const imgCount = {};
+  DATA.forEach(f => (f.faces || []).forEach(p => { imgCount[p] = (imgCount[p] || 0) + 1; }));
+
+  let html = '<h3 style="font-size:14px;color:var(--accent);margin-bottom:16px;">Detected Faces</h3>';
+  html += '<div class="faces-grid">';
+  persons.forEach(p => {
+    const thumb = PERSON_THUMBS[p];
+    const imgHtml = thumb
+      ? `<img src="data:image/jpeg;base64,${thumb}" alt="${p}">`
+      : '<div class="face-placeholder">👤</div>';
+    const count = imgCount[p] || 0;
+    html += `<div class="face-card" onclick="filterByFace('${p.replace(/'/g, "\\'")}')" title="Click to show photos of ${p}">
+      ${imgHtml}
+      <div class="face-label">${p}</div>
+      <div class="face-count">${count} photo${count !== 1 ? 's' : ''}</div>
+    </div>`;
+  });
+  html += '</div>';
+  html += '<div style="margin-top:16px;"><button class="manage-btn" onclick="openFaceManager()" style="width:auto;padding:8px 16px;">Rename / Merge Faces</button></div>';
+
+  panel.innerHTML = html;
+}
+
+function filterByFace(personName) {
+  // Switch to gallery, set face filter, apply
+  switchTab('gallery');
+  document.getElementById('filterFace').value = personName;
+  applyFilters();
 }
 
 // ---- Duplicates Rendering ----
@@ -1912,7 +1993,11 @@ function previewTrashDups() {
 }
 
 async function executeTrashDups() {
-  const paths = [...DUP_SELECTED].map(rel => currentFolder + '/' + rel);
+  // Use absolute paths from file objects (avoids path separator issues)
+  const paths = [...DUP_SELECTED].map(rel => {
+    const f = DATA.find(d => d.rel_path === rel);
+    return f ? f.path : currentFolder + '/' + rel;
+  });
   document.getElementById('loadingOverlay').classList.add('open');
   document.getElementById('progressText').textContent = 'Sending to trash...';
   try {

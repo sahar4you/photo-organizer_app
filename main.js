@@ -163,6 +163,24 @@ function hideCacheFolder(folderPath) {
   }
 }
 
+// ---- JSON storage in .cache/data/ ----
+function getDataPath(folderPath, filename) {
+  const dataDir = path.join(folderPath, '.cache', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  const newPath = path.join(dataDir, filename);
+  // Auto-migrate from root if old file exists and new doesn't
+  const oldPath = path.join(folderPath, filename);
+  if (!fs.existsSync(newPath) && fs.existsSync(oldPath)) {
+    try {
+      fs.renameSync(oldPath, newPath);
+    } catch (_) {
+      // If rename fails (cross-device), copy + delete
+      try { fs.copyFileSync(oldPath, newPath); fs.unlinkSync(oldPath); } catch (_2) {}
+    }
+  }
+  return newPath;
+}
+
 // Validate folder exists
 ipcMain.handle('validate-folder', async (event, folderPath) => {
   return fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory();
@@ -173,9 +191,9 @@ ipcMain.handle('move-duplicates', async (event, folderPath) => {
   return spawnScanner(folderPath, ['--move-duplicates']);
 });
 
-// Save face_names.json directly to folder
+// Save face_names.json
 ipcMain.handle('save-face-names', async (event, folderPath, nameMap) => {
-  const filePath = path.join(folderPath, 'face_names.json');
+  const filePath = getDataPath(folderPath, 'face_names.json');
   // Merge with existing mappings if file exists
   let existing = {};
   try {
@@ -189,7 +207,7 @@ ipcMain.handle('save-face-names', async (event, folderPath, nameMap) => {
 
 // Load face_names.json from folder
 ipcMain.handle('load-face-names', async (event, folderPath) => {
-  const filePath = path.join(folderPath, 'face_names.json');
+  const filePath = getDataPath(folderPath, 'face_names.json');
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(raw);
@@ -214,8 +232,8 @@ ipcMain.handle('read-image', async (event, filePath) => {
 ipcMain.handle('trash-files', async (event, filePaths) => {
   const results = [];
   for (const fp of filePaths) {
-    // Ensure absolute path
-    const absPath = path.isAbsolute(fp) ? fp : path.resolve(fp);
+    // Normalize and ensure absolute path
+    const absPath = path.resolve(fp);
     // Verify file exists before trashing
     if (!fs.existsSync(absPath)) {
       results.push({ path: fp, status: 'error', message: 'File not found' });
@@ -233,14 +251,14 @@ ipcMain.handle('trash-files', async (event, filePaths) => {
 
 // Save ignored duplicate groups to folder
 ipcMain.handle('save-ignored-groups', async (event, folderPath, ignoredGroups) => {
-  const filePath = path.join(folderPath, 'ignored_duplicates.json');
+  const filePath = getDataPath(folderPath, 'ignored_duplicates.json');
   fs.writeFileSync(filePath, JSON.stringify(ignoredGroups, null, 2), 'utf8');
   return filePath;
 });
 
 // Load ignored duplicate groups from folder
 ipcMain.handle('load-ignored-groups', async (event, folderPath) => {
-  const filePath = path.join(folderPath, 'ignored_duplicates.json');
+  const filePath = getDataPath(folderPath, 'ignored_duplicates.json');
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(raw);
@@ -251,14 +269,14 @@ ipcMain.handle('load-ignored-groups', async (event, folderPath) => {
 
 // Save photo tags to folder
 ipcMain.handle('save-tags', async (event, folderPath, tagsMap) => {
-  const filePath = path.join(folderPath, 'photo_tags.json');
+  const filePath = getDataPath(folderPath, 'photo_tags.json');
   fs.writeFileSync(filePath, JSON.stringify(tagsMap, null, 2), 'utf8');
   return filePath;
 });
 
 // Load photo tags from folder
 ipcMain.handle('load-tags', async (event, folderPath) => {
-  const filePath = path.join(folderPath, 'photo_tags.json');
+  const filePath = getDataPath(folderPath, 'photo_tags.json');
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(raw);
@@ -336,9 +354,11 @@ ipcMain.handle('export-files', async (event, folderPath, relPaths, subfolder, pr
 // Clear cache (hash_cache.json + .cache/thumbnails/)
 ipcMain.handle('clear-cache', async (event, folderPath) => {
   const removed = [];
-  const hashCache = path.join(folderPath, 'hash_cache.json');
-  if (fs.existsSync(hashCache)) {
-    try { fs.unlinkSync(hashCache); removed.push('hash_cache.json'); } catch (_) {}
+  // Clear hash_cache from both old and new locations
+  for (const loc of [path.join(folderPath, 'hash_cache.json'), path.join(folderPath, '.cache', 'data', 'hash_cache.json')]) {
+    if (fs.existsSync(loc)) {
+      try { fs.unlinkSync(loc); removed.push('hash_cache.json'); } catch (_) {}
+    }
   }
   const thumbDir = path.join(folderPath, '.cache', 'thumbnails');
   if (fs.existsSync(thumbDir)) {
