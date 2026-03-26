@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   exportFiles: (folderPath, relPaths, subfolder, preserveStructure) => ipcRenderer.invoke('export-files', folderPath, relPaths, subfolder, preserveStructure),
   clearCache: (folderPath) => ipcRenderer.invoke('clear-cache', folderPath),
   generateThumbnail: (folderPath, relPath, size) => ipcRenderer.invoke('generate-thumbnail', folderPath, relPath, size),
+  cleanupStaleThumbnails: (folderPath, validRelPaths) => ipcRenderer.invoke('cleanup-stale-thumbnails', folderPath, validRelPaths),
   onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_, msg) => callback(msg)),
   onScanProgressJson: (callback) => ipcRenderer.on('scan-progress-json', (_, data) => callback(data)),
 });

@@ -484,6 +484,10 @@ async function scanCurrentFolder() {
     applyFilters();
     updateDupBadge();
     if (activeTab === 'duplicates') renderDuplicates();
+
+    // Part 2: Clean stale thumbnails in background
+    const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
+    window.api.cleanupStaleThumbnails(currentFolder, validRels).catch(() => {});
   } catch (err) {
     alert('Scan failed: ' + err.message);
   }
@@ -664,25 +668,46 @@ function getThumbSize() {
   return 200; // medium / list-view
 }
 
-// On-demand lazy thumbnail generation via IntersectionObserver
+// On-demand lazy thumbnail generation via IntersectionObserver + client queue
 let thumbObserver = null;
+const THUMB_QUEUE_MAX = 4;
+let thumbQueueActive = 0;
+const thumbClientQueue = [];
+
+function drainThumbQueue() {
+  while (thumbQueueActive < THUMB_QUEUE_MAX && thumbClientQueue.length > 0) {
+    const task = thumbClientQueue.shift();
+    thumbQueueActive++;
+    task().finally(() => { thumbQueueActive--; drainThumbQueue(); });
+  }
+}
+
+function enqueueThumb(fn) {
+  thumbClientQueue.push(fn);
+  drainThumbQueue();
+}
+
 function initLazyThumbs() {
   if (thumbObserver) thumbObserver.disconnect();
+  // Cancel any pending queue items from previous render
+  thumbClientQueue.length = 0;
   const imgs = document.querySelectorAll('.lazy-thumb');
   if (imgs.length === 0) return;
   const thumbSize = getThumbSize();
   thumbObserver = new IntersectionObserver((entries) => {
-    entries.forEach(async (entry) => {
+    entries.forEach((entry) => {
       if (!entry.isIntersecting) return;
       const img = entry.target;
       const folder = img.dataset.folder;
       const relPath = img.dataset.rel;
       if (!folder || !relPath) return;
       thumbObserver.unobserve(img);
-      try {
-        const dataUrl = await window.api.generateThumbnail(folder, relPath, thumbSize);
-        if (dataUrl) img.src = dataUrl;
-      } catch (_) {}
+      enqueueThumb(async () => {
+        try {
+          const dataUrl = await window.api.generateThumbnail(folder, relPath, thumbSize);
+          if (dataUrl) img.src = dataUrl;
+        } catch (_) {}
+      });
     });
   }, { rootMargin: '300px' });
   imgs.forEach(img => thumbObserver.observe(img));
