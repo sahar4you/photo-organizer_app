@@ -691,27 +691,38 @@ function formatDate(dateStr) {
 }
 
 // ---- Quality display helpers ----
-function parseResolution(resStr) {
-  if (!resStr || resStr === 'Unknown') return { w: 0, h: 0, mp: 0 };
-  const p = resStr.split('x');
-  if (p.length !== 2) return { w: 0, h: 0, mp: 0 };
-  const w = parseInt(p[0]) || 0, h = parseInt(p[1]) || 0;
-  return { w, h, mp: (w * h) / 1_000_000 };
+// ---- Resolution + Quality display helpers ----
+function getFileDims(f) {
+  // Prefer explicit width/height, fallback to parsing resolution string
+  let w = f.width || 0, h = f.height || 0;
+  if ((!w || !h) && f.resolution && f.resolution !== 'Unknown') {
+    const p = f.resolution.split('x');
+    if (p.length === 2) { w = parseInt(p[0]) || 0; h = parseInt(p[1]) || 0; }
+  }
+  return { w, h, mp: w > 0 && h > 0 ? (w * h) / 1_000_000 : 0 };
 }
 
-function formatResolution(resStr) {
-  const { w, h, mp } = parseResolution(resStr);
-  if (w === 0) return '';
+function formatResolution(f) {
+  const { w, h, mp } = getFileDims(f);
+  if (w === 0 || h === 0) return '';
   return `${w} × ${h} (${mp.toFixed(1)} MP)`;
 }
 
-function usageLabel(resStr) {
-  const { mp } = parseResolution(resStr);
+function usageLabel(f) {
+  const { mp } = getFileDims(f);
   if (mp <= 0) return '';
   if (mp < 1) return 'Suitable for: Thumbnail / Preview';
   if (mp < 3) return 'Suitable for: Social Media';
   if (mp < 8) return 'Suitable for: Web / HD Display';
   return 'Suitable for: Print / High Quality';
+}
+
+function scoreIcon(val) {
+  if (val == null) return '';
+  if (val >= 80) return '⭐';
+  if (val >= 50) return '🟢';
+  if (val >= 20) return '🟡';
+  return '🔴';
 }
 
 function scoreLabel(val) {
@@ -723,32 +734,30 @@ function scoreLabel(val) {
 }
 
 function qualityReason(sharpness, resScore, sizeScore) {
-  const parts = [];
   const sh = sharpness ?? 0, rs = resScore ?? 0, sz = sizeScore ?? 0;
-  // Sharpness
+  const parts = [];
   if (sh >= 50) parts.push('sharp image');
   else if (sh >= 20) parts.push('moderate sharpness');
   else parts.push('low sharpness');
-  // Resolution
   if (rs >= 50) parts.push('high resolution');
   else if (rs >= 20) parts.push('moderate resolution');
   else parts.push('low resolution');
-  // Size (only mention if notably high or low)
   if (sz >= 70) parts.push('large file size');
   else if (sz < 20) parts.push('small file size');
-  // Build sentence
   const highParts = parts.filter(p => p.startsWith('high') || p.startsWith('sharp') || p.startsWith('large'));
-  const lowParts = parts.filter(p => p.startsWith('low') || p.startsWith('small'));
-  if (highParts.length >= 2 && lowParts.length === 0) return highParts.slice(0, 2).join(' and ');
-  if (lowParts.length >= 2 && highParts.length === 0) return lowParts.slice(0, 2).join(' and ');
-  if (highParts.length > 0 && lowParts.length > 0) return `${highParts[0]} but ${lowParts[0]}`;
-  return parts.slice(0, 2).join(' and ');
+  const lowParts = parts.filter(p => p.startsWith('low') || p.startsWith('small') || p.startsWith('moderate'));
+  let reason;
+  if (highParts.length >= 2) reason = highParts.slice(0, 2).join(' and ');
+  else if (lowParts.length >= 2 && highParts.length === 0) reason = lowParts.slice(0, 2).join(' and ');
+  else if (highParts.length > 0 && lowParts.length > 0) reason = `${highParts[0]} but ${lowParts[0]}`;
+  else reason = parts.slice(0, 2).join(' and ');
+  return reason.charAt(0).toUpperCase() + reason.slice(1);
 }
 
 function qualityBreakdownHtml(f) {
   if (f.quality_score == null) return '';
   const sh = f.sharpness ?? 0, rs = f.resolution_score ?? 0, sz = f.size_score ?? 0;
-  return `Sharpness: ${scoreLabel(sh)} (${sh}) · Resolution: ${scoreLabel(rs)} (${rs}) · Size: ${scoreLabel(sz)} (${sz})`;
+  return `${scoreIcon(sh)} Sharpness: ${scoreLabel(sh)} (${sh}) · ${scoreIcon(rs)} Resolution Score: ${scoreLabel(rs)} (${rs}) · ${scoreIcon(sz)} File Size Score: ${scoreLabel(sz)} (${sz})`;
 }
 
 function renderCard(f, idx) {
@@ -777,7 +786,7 @@ function renderCard(f, idx) {
   const checkMark = isSelected ? '✓' : '';
   const folderName = getFolderFromRel(f.rel_path);
   const shortDate = formatDate(f.date);
-  const resFmt = formatResolution(f.resolution);
+  const resFmt = formatResolution(f);
   const listQuality = `<span class="list-quality" title="${qTip}">${qLabel}</span>`;
   return `<div class="${selClass}" data-idx="${idx}" data-rel="${f.rel_path}">
     <div class="select-check">${checkMark}</div>
@@ -927,25 +936,35 @@ async function openLightbox(idx) {
   document.getElementById('lbName').textContent = f.name;
   const folderPath = getFolderFromRel(f.rel_path);
   let meta = '';
+  // 1. Folder
   if (folderPath) meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+  // 2. Date · Size · Type
   meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
-  // Resolution with MP + usage label
-  const resFull = formatResolution(f.resolution);
+  // 3. Resolution with MP
+  const resFull = formatResolution(f);
   if (resFull) meta += `<br>${resFull}`;
-  const usage = usageLabel(f.resolution);
+  // 4. Usage label
+  const usage = usageLabel(f);
   if (usage) meta += `<br><span style="font-size:11px;color:var(--accent2);">${usage}</span>`;
-  if (f.camera !== 'Unknown') meta += `<br>Camera: ${f.camera}`;
-  // Quality score with breakdown + reason
+  // 5. Camera
+  if (f.camera && f.camera !== 'Unknown') meta += `<br>Camera: ${f.camera}`;
+  // 6. Quality block
   if (f.type === 'video') {
     meta += '<br>Type: Video';
   } else if (f.quality_score != null) {
     meta += `<br>Quality: <b>Q:${f.quality_score} (${f.quality_label||''})</b>`;
-    meta += `<br><span style="font-size:11px;color:var(--text2);">Sharpness: ${scoreLabel(f.sharpness)} (${f.sharpness??0}) · Resolution: ${scoreLabel(f.resolution_score)} (${f.resolution_score??0}) · Size: ${scoreLabel(f.size_score)} (${f.size_score??0})</span>`;
+    const sh = f.sharpness ?? 0, rs = f.resolution_score ?? 0, sz = f.size_score ?? 0;
+    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(sh)} Sharpness: ${scoreLabel(sh)} (${sh})</span>`;
+    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(rs)} Resolution Score: ${scoreLabel(rs)} (${rs})</span>`;
+    meta += `<br><span style="font-size:11px;color:var(--text2);">${scoreIcon(sz)} File Size Score: ${scoreLabel(sz)} (${sz})</span>`;
     const reason = qualityReason(f.sharpness, f.resolution_score, f.size_score);
     if (reason) meta += `<br><span style="font-size:11px;color:var(--text2);">Reason: ${reason}</span>`;
   }
+  // 7. Faces
   if (f.faces && f.faces.length > 0) meta += `<br>👤 ${f.faces.join(', ')}`;
+  // 8. Tags
   if (f.tags && f.tags.length > 0) meta += `<br>Tags: ${f.tags.join(', ')}`;
+  // 9. GPS
   if (f.has_gps) meta += `<br>📍 ${f.gps_lat}, ${f.gps_lon}`;
   document.getElementById('lbMeta').innerHTML = meta;
 

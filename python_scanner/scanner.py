@@ -335,6 +335,7 @@ def scan_folder(folder):
         date_taken = None
         camera = ""
         resolution = ""
+        img_width, img_height = 0, 0
         gps_lat, gps_lon = None, None
 
         if not is_video:
@@ -343,9 +344,21 @@ def scan_folder(folder):
             camera = str(exif.get('Make','')).strip()
             model = str(exif.get('Model','')).strip()
             if model: camera = f"{camera} {model}".strip()
-            w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth','')
-            h2 = exif.get('ExifImageHeight') or exif.get('ImageLength','')
-            if w2 and h2: resolution = f"{w2}x{h2}"
+            w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
+            h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
+            # Fallback: read actual image dimensions via PIL if EXIF is missing
+            if (not w2 or not h2) and HAS_PIL:
+                try:
+                    with Image.open(str(filepath)) as pil_img:
+                        w2, h2 = pil_img.size
+                except Exception:
+                    pass
+            if w2 and h2:
+                try:
+                    img_width, img_height = int(w2), int(h2)
+                    resolution = f"{img_width}x{img_height}"
+                except (ValueError, TypeError):
+                    pass
             gps_info = exif.get('GPSInfo')
             if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
 
@@ -383,6 +396,8 @@ def scan_folder(folder):
             "day": date_taken.strftime("%Y-%m-%d"),
             "camera": camera or "Unknown",
             "resolution": resolution or "Unknown",
+            "width": img_width,
+            "height": img_height,
             "has_gps": gps_lat is not None,
             "gps_lat": gps_lat,
             "gps_lon": gps_lon,
