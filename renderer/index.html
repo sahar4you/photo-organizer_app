@@ -531,11 +531,6 @@ async function scanCurrentFolder() {
     DUP_GROUPS = result.duplicate_groups || null;
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
-    // Debug: verify resolution data flow (remove after verification)
-    if (DATA.length > 0) {
-      const sample = DATA.find(f => f.type === 'image') || DATA[0];
-      console.log('[DEBUG] Sample file data:', { name: sample.name, width: sample.width, height: sample.height, resolution: sample.resolution, quality_score: sample.quality_score, quality_label: sample.quality_label });
-    }
     // Load persisted ignored groups
     try {
       const ignored = await window.api.loadIgnoredGroups(currentFolder);
@@ -688,8 +683,10 @@ function applyFilters() {
 }
 
 function getFolderFromRel(relPath) {
-  const parts = relPath.split('/');
-  return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+  if (!relPath) return '';
+  const parts = relPath.replace(/\\/g, '/').split('/');
+  if (parts.length <= 1) return '';
+  return parts.slice(0, -1).join(' / ');
 }
 
 function formatDate(dateStr) {
@@ -699,7 +696,6 @@ function formatDate(dateStr) {
   } catch (_) { return dateStr; }
 }
 
-// ---- Quality display helpers ----
 // ---- Resolution + Quality display helpers ----
 function getFileDims(f) {
   // Prefer explicit width/height, fallback to parsing resolution string
@@ -950,10 +946,10 @@ async function openLightbox(idx) {
   }
 
   document.getElementById('lbName').textContent = f.name;
-  const folderPath = getFolderFromRel(f.rel_path);
+  const folderPath = getFolderFromRel(f.rel_path) || 'Root';
   let meta = '';
-  // 1. Folder
-  if (folderPath) meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+  // 1. Folder path
+  meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
   // 2. Date · Size · Type
   meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
   // 3. Resolution with MP + Usage
