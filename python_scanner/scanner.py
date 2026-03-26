@@ -153,8 +153,31 @@ def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
     if sharpness < 20:
         quality_score = round(quality_score * 0.5)
 
+    # Resolution-based adjustment for tiny images
+    megapixels = pixels / 1_000_000
+    if megapixels < 0.5:
+        quality_score = round(quality_score * 0.6)
+    elif megapixels < 1:
+        quality_score = round(quality_score * 0.75)
+
+    # Minimum floor: no image scores below 5
+    quality_score = max(quality_score, 5)
+
+    # Quality label
+    if quality_score >= 75:
+        quality_label = "Best"
+    elif quality_score >= 50:
+        quality_label = "Better"
+    elif quality_score >= 25:
+        quality_label = "Good"
+    elif quality_score >= 10:
+        quality_label = "Basic"
+    else:
+        quality_label = "Poor"
+
     return {
         "quality_score": quality_score,
+        "quality_label": quality_label,
         "sharpness": sharpness,
         "resolution_score": resolution_score,
         "size_score": size_score,
@@ -366,6 +389,7 @@ def scan_folder(folder):
             "thumb": thumb,
             "sharpness_raw": sharpness_raw,
             "quality_score": None if is_video else 0,
+            "quality_label": None if is_video else "Poor",
             "sharpness": None if is_video else 0,
             "resolution_score": None if is_video else 0,
             "size_score": None if is_video else 0,
@@ -405,6 +429,7 @@ def scan_folder(folder):
                 f["sharpness_raw"], max_sharpness, max_pixels, max_size
             )
             f["quality_score"] = scores["quality_score"]
+            f["quality_label"] = scores["quality_label"]
             f["sharpness"] = scores["sharpness"]
             f["resolution_score"] = scores["resolution_score"]
             f["size_score"] = scores["size_score"]

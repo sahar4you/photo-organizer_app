@@ -316,6 +316,15 @@
         <div class="tag-filter-chips" id="tagChips"></div>
       </div>
       <div class="filter-group">
+        <label>Quality</label>
+        <select id="filterQuality">
+          <option value="">All Quality</option>
+          <option value="good">Good+ (25+)</option>
+          <option value="better">Better+ (50+)</option>
+          <option value="best">Best (75+)</option>
+        </select>
+      </div>
+      <div class="filter-group">
         <label>Sort</label>
         <select id="sortBy">
           <option value="date_desc">Newest First</option>
@@ -348,6 +357,7 @@
       <button class="reset-btn" onclick="toggleSelectMode()" id="btnSelectMode">Select Photos</button>
       <button class="reset-btn" onclick="resetFilters()">Reset Filters</button>
       <button class="reset-btn" onclick="clearCache()" style="color:var(--danger);border-color:var(--danger);">Clear Cache</button>
+      <button class="reset-btn" onclick="openHelp()">Help / About</button>
     </div>
   </aside>
 
@@ -415,6 +425,36 @@
   <div class="lb-info">
     <div class="lb-name" id="lbName"></div>
     <div class="lb-meta" id="lbMeta"></div>
+  </div>
+</div>
+
+<!-- Help Modal -->
+<div class="modal-overlay" id="helpModal">
+  <div class="modal" style="width:520px;max-height:85vh;">
+    <h3>Photo Organizer — Help</h3>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Version 1.1.0</div>
+    <p style="font-size:12px;margin-bottom:14px;line-height:1.6;">
+      A portable desktop photo organizer with face detection, duplicate detection,
+      tagging, quality scoring, and export features. No internet required.
+    </p>
+    <h3 style="font-size:13px;margin-bottom:8px;">Quality Score Guide</h3>
+    <div style="font-size:12px;line-height:1.7;color:var(--text);">
+      <b>0–10 (Poor):</b><br>
+      Low quality or thumbnails (usually under ~0.5 MP). Suitable for small previews only.<br><br>
+      <b>10–25 (Basic):</b><br>
+      Basic quality (~0.5–1 MP). Suitable for social media sharing.<br><br>
+      <b>25–50 (Good):</b><br>
+      Good quality (~1–3 MP). Suitable for regular viewing and sharing.<br><br>
+      <b>50–75 (Better):</b><br>
+      Better quality (~3–8 MP). Suitable for large screens or light printing.<br><br>
+      <b>75–100 (Best):</b><br>
+      Best quality (8+ MP). High sharpness, high resolution, best for printing.<br><br>
+      <i>Note: Quality score depends on sharpness, resolution, and file size.
+      Low resolution images may receive lower scores even if they look visually good.</i>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-save" onclick="closeHelp()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -599,6 +639,7 @@ function applyFilters() {
   const res = document.getElementById('filterRes').value;
   const face = document.getElementById('filterFace').value;
   const tag = document.getElementById('filterTag').value;
+  const quality = document.getElementById('filterQuality').value;
   const sort = document.getElementById('sortBy').value;
 
   filtered = DATA.filter(f => {
@@ -614,6 +655,9 @@ function applyFilters() {
     if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
     if (tag === '__no_tag__' && f.tags && f.tags.length > 0) return false;
     if (tag && tag !== '__has_tag__' && tag !== '__no_tag__' && (!f.tags || !f.tags.includes(tag))) return false;
+    if (quality === 'good' && (f.quality_score == null || f.quality_score < 25)) return false;
+    if (quality === 'better' && (f.quality_score == null || f.quality_score < 50)) return false;
+    if (quality === 'best' && (f.quality_score == null || f.quality_score < 75)) return false;
     return true;
   });
 
@@ -658,13 +702,14 @@ function renderCard(f, idx) {
   const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
   const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
   const qScore = f.quality_score;
+  const qCat = f.quality_label || '';
   const isVideo = f.type === 'video';
-  const qLabel = isVideo ? 'Video' : (qScore != null ? `Q:${qScore}` : '');
+  const qLabel = isVideo ? 'Video' : (qScore != null ? `Q:${qScore} (${qCat})` : '');
   const qTooltip = isVideo ? '' : (qScore != null
-    ? `Quality: ${qScore}/100 (Sharp: ${f.sharpness??0}, Res: ${f.resolution_score??0}, Size: ${f.size_score??0})`
+    ? `Quality: ${qScore}/100 — ${qCat} (Sharp: ${f.sharpness??0}, Res: ${f.resolution_score??0}, Size: ${f.size_score??0})`
     : '');
-  const qualityBadge = (!isVideo && qScore != null && qScore > 0)
-    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="${qTooltip}">${qLabel}</div>` : '';
+  const qualityBadge = (!isVideo && qScore != null)
+    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="${qTooltip}">Q:${qScore}</div>` : '';
   const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
@@ -824,13 +869,21 @@ async function openLightbox(idx) {
   let meta = '';
   if (folderPath) meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
   meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
-  if (f.resolution && f.resolution !== 'Unknown') meta += ` · ${f.resolution}`;
+  if (f.resolution && f.resolution !== 'Unknown') {
+    meta += ` · ${f.resolution}`;
+    const rParts = f.resolution.split('x');
+    if (rParts.length === 2) {
+      const mp = ((parseInt(rParts[0]) * parseInt(rParts[1])) / 1_000_000).toFixed(1);
+      meta += ` (${mp} MP)`;
+    }
+  }
   if (f.camera !== 'Unknown') meta += `<br>Camera: ${f.camera}`;
   // Quality score
   if (f.type === 'video') {
     meta += '<br>Type: Video';
   } else if (f.quality_score != null) {
-    meta += `<br>Quality: <b>Q:${f.quality_score}</b> (Sharp: ${f.sharpness??0}, Res: ${f.resolution_score??0}, Size: ${f.size_score??0})`;
+    meta += `<br>Quality: <b>Q:${f.quality_score} (${f.quality_label||''})</b>`;
+    meta += `<br><span style="font-size:11px;color:var(--text2);">Sharp: ${f.sharpness??0} · Res: ${f.resolution_score??0} · Size: ${f.size_score??0}</span>`;
   }
   if (f.faces && f.faces.length > 0) meta += `<br>👤 ${f.faces.join(', ')}`;
   if (f.tags && f.tags.length > 0) meta += `<br>Tags: ${f.tags.join(', ')}`;
@@ -1045,7 +1098,7 @@ function setGridSize(size) {
 }
 
 function resetFilters() {
-  ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag'].forEach(id => {
+  ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','filterQuality'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('sortBy').value = 'date_desc';
@@ -1053,7 +1106,7 @@ function resetFilters() {
 }
 
 // Attach filter events
-['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','sortBy'].forEach(id => {
+['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','filterQuality','sortBy'].forEach(id => {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
@@ -1288,6 +1341,10 @@ async function executeExport() {
   document.getElementById('loadingOverlay').classList.remove('open');
 }
 
+// ---- Help Modal ----
+function openHelp() { document.getElementById('helpModal').classList.add('open'); }
+function closeHelp() { document.getElementById('helpModal').classList.remove('open'); }
+
 // ---- Clear Cache ----
 async function clearCache() {
   if (!currentFolder) return;
@@ -1505,12 +1562,13 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
   }
 
   // Quality score badge
-  const qScore = fileData ? (fileData.quality_score || 0) : 0;
-  const qTooltip = fileData
-    ? `Quality: ${qScore}/100 (Sharp: ${fileData.sharpness||0}, Res: ${fileData.resolution_score||0}, Size: ${fileData.size_score||0})`
+  const qScore = fileData ? fileData.quality_score : null;
+  const qCat = fileData ? (fileData.quality_label || '') : '';
+  const qTooltip = (fileData && qScore != null)
+    ? `Quality: ${qScore}/100 — ${qCat} (Sharp: ${fileData.sharpness??0}, Res: ${fileData.resolution_score??0}, Size: ${fileData.size_score??0})`
     : '';
-  const qHtml = fileData && fileData.type === 'image'
-    ? `<span class="distance-badge" title="${qTooltip}">Q:${qScore}</span>` : '';
+  const qHtml = (fileData && fileData.type === 'image' && qScore != null)
+    ? `<span class="distance-badge" title="${qTooltip}">Q:${qScore} (${qCat})</span>` : '';
 
   // Suggested best badge
   const suggestedHtml = isSuggested
