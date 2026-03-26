@@ -146,7 +146,26 @@ ipcMain.handle('pick-folder', async () => {
 
 // Scan folder — uses bundled EXE in production, Python in dev
 ipcMain.handle('scan-folder', async (event, folderPath) => {
-  return spawnScanner(folderPath, []);
+  const result = await spawnScanner(folderPath, []);
+  // Set .cache folder as hidden on Windows
+  hideCacheFolder(folderPath);
+  return result;
+});
+
+function hideCacheFolder(folderPath) {
+  if (process.platform !== 'win32') return;
+  const cacheDir = path.join(folderPath, '.cache');
+  if (fs.existsSync(cacheDir)) {
+    try {
+      const { execSync } = require('child_process');
+      execSync(`attrib +h "${cacheDir}"`, { stdio: 'ignore' });
+    } catch (_) {}
+  }
+}
+
+// Validate folder exists
+ipcMain.handle('validate-folder', async (event, folderPath) => {
+  return fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory();
 });
 
 // Move duplicates — re-runs scanner with --move-duplicates flag
@@ -195,8 +214,15 @@ ipcMain.handle('read-image', async (event, filePath) => {
 ipcMain.handle('trash-files', async (event, filePaths) => {
   const results = [];
   for (const fp of filePaths) {
+    // Ensure absolute path
+    const absPath = path.isAbsolute(fp) ? fp : path.resolve(fp);
+    // Verify file exists before trashing
+    if (!fs.existsSync(absPath)) {
+      results.push({ path: fp, status: 'error', message: 'File not found' });
+      continue;
+    }
     try {
-      await shell.trashItem(fp);
+      await shell.trashItem(absPath);
       results.push({ path: fp, status: 'trashed' });
     } catch (e) {
       results.push({ path: fp, status: 'error', message: e.message });

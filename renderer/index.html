@@ -287,16 +287,6 @@
         </select>
       </div>
       <div class="filter-group">
-        <label>Size</label>
-        <select id="filterSize">
-          <option value="">All Sizes</option>
-          <option value="small">&lt; 1 MB</option>
-          <option value="medium">1-5 MB</option>
-          <option value="large">5-20 MB</option>
-          <option value="huge">&gt; 20 MB</option>
-        </select>
-      </div>
-      <div class="filter-group">
         <label>Camera</label>
         <select id="filterCamera"><option value="">All Cameras</option></select>
       </div>
@@ -381,6 +371,7 @@
       <h2>📸 Photo Organizer</h2>
       <p>Select a folder to scan and organize your photos with<br>date, face, camera, and size filters.</p>
       <button class="big-btn" onclick="pickFolder()">Open Photo Folder</button>
+      <div id="recentFolders" style="margin-top:20px;text-align:center;"></div>
     </div>
     <div class="tab-bar" id="tabBar" style="display:none;">
       <button class="active" onclick="switchTab('gallery')">Gallery</button>
@@ -503,6 +494,48 @@ let selectMode = false;   // multi-select mode
 let SELECTED_PHOTOS = new Set(); // rel_paths of selected photos
 let showFolderName = localStorage.getItem('showFolderName') !== 'false'; // default: true
 
+// ---- Folder History ----
+function getFolderHistory() {
+  try { return JSON.parse(localStorage.getItem('folderHistory') || '[]'); }
+  catch (_) { return []; }
+}
+
+function addToFolderHistory(folderPath) {
+  let history = getFolderHistory().filter(p => p !== folderPath);
+  history.unshift(folderPath);
+  history = history.slice(0, 3);
+  localStorage.setItem('folderHistory', JSON.stringify(history));
+}
+
+async function renderRecentFolders() {
+  const container = document.getElementById('recentFolders');
+  if (!container) return;
+  const history = getFolderHistory();
+  if (history.length === 0) { container.innerHTML = ''; return; }
+  // Validate which folders still exist
+  const valid = [];
+  for (const p of history) {
+    try {
+      if (await window.api.validateFolder(p)) valid.push(p);
+    } catch (_) {}
+  }
+  if (valid.length === 0) { container.innerHTML = ''; return; }
+  let html = '<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Recent Folders</div>';
+  valid.forEach(p => {
+    const name = p.split(/[\\/]/).pop();
+    html += `<button style="display:block;margin:4px auto;background:var(--card);color:var(--accent);border:1px solid var(--border);border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p}" onclick="openRecentFolder('${p.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">${name}</button>`;
+  });
+  container.innerHTML = html;
+}
+
+async function openRecentFolder(folderPath) {
+  currentFolder = folderPath;
+  await scanCurrentFolder();
+}
+
+// Show recent folders on startup
+document.addEventListener('DOMContentLoaded', renderRecentFolders);
+
 // ---- Folder picking & scanning ----
 async function pickFolder() {
   const folder = await window.api.pickFolder();
@@ -572,12 +605,13 @@ async function scanCurrentFolder() {
     document.getElementById('tabBar').style.display = 'flex';
     document.getElementById('gallery').style.display = '';
 
+    addToFolderHistory(currentFolder);
     populateFilters();
     applyFilters();
     updateDupBadge();
     if (activeTab === 'duplicates') renderDuplicates();
 
-    // Part 2: Clean stale thumbnails in background
+    // Clean stale thumbnails in background
     const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
     window.api.cleanupStaleThumbnails(currentFolder, validRels).catch(() => {});
   } catch (err) {
@@ -634,20 +668,10 @@ function refreshFaceUI() {
   });
 }
 
-function matchSize(mb, f) {
-  if (!f) return true;
-  if (f === 'small') return mb < 1;
-  if (f === 'medium') return mb >= 1 && mb < 5;
-  if (f === 'large') return mb >= 5 && mb < 20;
-  if (f === 'huge') return mb >= 20;
-  return true;
-}
-
 function applyFilters() {
   const search = document.getElementById('searchBox').value.toLowerCase();
   const month = document.getElementById('filterMonth').value;
   const type = document.getElementById('filterType').value;
-  const size = document.getElementById('filterSize').value;
   const camera = document.getElementById('filterCamera').value;
   const res = document.getElementById('filterRes').value;
   const face = document.getElementById('filterFace').value;
@@ -659,7 +683,6 @@ function applyFilters() {
     if (search && !f.name.toLowerCase().includes(search)) return false;
     if (month && f.month !== month) return false;
     if (type && f.type !== type) return false;
-    if (!matchSize(f.size_mb, size)) return false;
     if (camera && f.camera !== camera) return false;
     if (res) {
       const { mp } = getFileDims(f);
@@ -696,10 +719,19 @@ function applyFilters() {
   render();
 }
 
-function getFolderFromRel(relPath) {
+function getParentFolder(relPath) {
+  // Returns ONLY the immediate parent folder name (for cards)
   if (!relPath) return '';
   const parts = relPath.replace(/\\/g, '/').split('/');
   if (parts.length <= 1) return '';
+  return parts[parts.length - 2];
+}
+
+function getFullFolderPath(relPath) {
+  // Returns full folder hierarchy: "Root / FolderA / FolderB" (for lightbox)
+  if (!relPath) return 'Root';
+  const parts = relPath.replace(/\\/g, '/').split('/');
+  if (parts.length <= 1) return 'Root';
   return parts.slice(0, -1).join(' / ');
 }
 
@@ -810,7 +842,7 @@ function renderCard(f, idx) {
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
   const checkMark = isSelected ? '✓' : '';
-  const folderName = showFolderName ? getFolderFromRel(f.rel_path) : '';
+  const folderName = showFolderName ? getParentFolder(f.rel_path) : '';
   const shortDate = formatDate(f.date);
   const resFmt = formatResolution(f);
   const listQuality = `<span class="list-quality" title="${qTip}">${qLabel}</span>`;
@@ -963,7 +995,7 @@ async function openLightbox(idx) {
   let meta = '';
   // 1. Folder path (respects setting)
   if (showFolderName) {
-    const folderPath = getFolderFromRel(f.rel_path) || 'Root';
+    const folderPath = getFullFolderPath(f.rel_path);
     meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
   }
   // 2. Date · Size · Type
@@ -1203,7 +1235,7 @@ function setGridSize(size) {
 }
 
 function resetFilters() {
-  ['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','filterQuality'].forEach(id => {
+  ['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterQuality'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('sortBy').value = 'date_desc';
@@ -1211,7 +1243,7 @@ function resetFilters() {
 }
 
 // Attach filter events
-['searchBox','filterMonth','filterType','filterSize','filterCamera','filterRes','filterFace','filterTag','filterQuality','sortBy'].forEach(id => {
+['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterQuality','sortBy'].forEach(id => {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
@@ -1725,18 +1757,27 @@ function toggleDupSelect(relPath, checked) {
   updateSelectionCount();
 }
 
+function getAllGroupFiles(g) {
+  // Collect all unique file paths in a group (keep + duplicates + members)
+  const all = new Set();
+  if (g.keep) all.add(g.keep);
+  (g.duplicates || []).forEach(d => all.add(d));
+  if (g.members) g.members.forEach(m => all.add(m.rel_path));
+  return all;
+}
+
 function selectAllDups() {
   if (!DUP_GROUPS) return;
   DUP_SELECTED = new Set();
   const addDups = (groups, prefix) => {
     groups.forEach((g, i) => {
       const gKey = `${prefix}_${i}`;
-      if (IGNORED_GROUPS.has(gKey)) return; // skip ignored
+      if (IGNORED_GROUPS.has(gKey)) return;
       const keeper = DUP_KEEPERS[gKey] || g.keep;
-      (g.duplicates || []).forEach(d => { if (d !== keeper) DUP_SELECTED.add(d); });
-      if (g.members) {
-        g.members.forEach(m => { if (m.rel_path !== keeper) DUP_SELECTED.add(m.rel_path); });
-      }
+      // Select ALL files in group EXCEPT the keeper
+      getAllGroupFiles(g).forEach(rel => {
+        if (rel !== keeper) DUP_SELECTED.add(rel);
+      });
     });
   };
   addDups(DUP_GROUPS.exact || [], 'exact');
