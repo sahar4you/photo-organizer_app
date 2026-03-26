@@ -106,7 +106,57 @@ def make_thumbnail_b64(filepath):
         return base64.b64encode(buf.getvalue()).decode()
     except: return ""
 
-# ---- Face Detection ----
+# ---- Image Quality Scoring ----
+def compute_sharpness(filepath):
+    """Compute sharpness via Laplacian variance. Returns raw variance float."""
+    if not HAS_FACE:
+        return 0.0
+    try:
+        img = cv2.imread(str(filepath))
+        if img is None:
+            return 0.0
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Resize to max 800px for consistent & fast scoring
+        h, w = gray.shape[:2]
+        if max(h, w) > 800:
+            scale = 800 / max(h, w)
+            gray = cv2.resize(gray, (int(w * scale), int(h * scale)))
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    except Exception:
+        return 0.0
+
+def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
+                           max_sharpness, max_pixels, max_size):
+    """Compute normalized quality sub-scores and final weighted score.
+    All inputs for max_* should be the dataset maximums (computed in second pass)."""
+    # Sharpness: 0-100
+    sharpness = min(100, round((sharpness_raw / max_sharpness) * 100)) if max_sharpness > 0 else 0
+
+    # Resolution: 0-100
+    pixels = 0
+    if resolution_str and resolution_str != "Unknown":
+        parts = resolution_str.split("x")
+        if len(parts) == 2:
+            try:
+                pixels = int(parts[0]) * int(parts[1])
+            except ValueError:
+                pass
+    resolution_score = min(100, round((pixels / max_pixels) * 100)) if max_pixels > 0 else 0
+
+    # File size: 0-100
+    size_score = min(100, round((size_bytes / max_size) * 100)) if max_size > 0 else 0
+
+    # Weighted final score
+    quality_score = round(sharpness * 0.5 + resolution_score * 0.3 + size_score * 0.2)
+
+    return {
+        "quality_score": quality_score,
+        "sharpness": sharpness,
+        "resolution_score": resolution_score,
+        "size_score": size_score,
+    }
+
+# ---- Face Detection (OpenCV) ----
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
     if not HAS_FACE: return [], []
     try:
@@ -276,8 +326,10 @@ def scan_folder(folder):
         if not date_taken: date_taken = mod_time
 
         thumb = ""
+        sharpness_raw = 0.0
         if not is_video:
             thumb = make_thumbnail_b64(str(filepath))
+            sharpness_raw = compute_sharpness(str(filepath))
 
         face_count = 0
         if not is_video and face_cascade is not None:
@@ -308,6 +360,11 @@ def scan_folder(folder):
             "gps_lat": gps_lat,
             "gps_lon": gps_lon,
             "thumb": thumb,
+            "sharpness_raw": sharpness_raw,
+            "quality_score": 0,
+            "sharpness": 0,
+            "resolution_score": 0,
+            "size_score": 0,
             "faces": [],
             "face_count": face_count,
             "tags": [],
@@ -320,6 +377,37 @@ def scan_folder(folder):
             emit_progress(pct, i + 1, total_count, "scanning")
 
     log(f"Scanned {len(files)} media files.")
+
+    # ---- Quality score normalization (second pass) ----
+    images = [f for f in files if f["type"] == "image"]
+    if images:
+        max_sharpness = max((f["sharpness_raw"] for f in images), default=1.0) or 1.0
+        max_pixels = 1
+        for f in images:
+            res = f.get("resolution", "Unknown")
+            if res and res != "Unknown":
+                parts = res.split("x")
+                if len(parts) == 2:
+                    try:
+                        px = int(parts[0]) * int(parts[1])
+                        if px > max_pixels: max_pixels = px
+                    except ValueError:
+                        pass
+        max_size = max((f["size_bytes"] for f in images), default=1) or 1
+
+        for f in images:
+            scores = compute_quality_scores(
+                f["path"], f["size_bytes"], f.get("resolution", "Unknown"),
+                f["sharpness_raw"], max_sharpness, max_pixels, max_size
+            )
+            f["quality_score"] = scores["quality_score"]
+            f["sharpness"] = scores["sharpness"]
+            f["resolution_score"] = scores["resolution_score"]
+            f["size_score"] = scores["size_score"]
+
+    # Remove sharpness_raw from output (internal only)
+    for f in files:
+        f.pop("sharpness_raw", None)
 
     # Load and apply photo tags
     tags_path = folder / "photo_tags.json"

@@ -641,16 +641,18 @@ function renderCard(f, idx) {
   }
   const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
   const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
+  const qScore = f.quality_score || 0;
+  const qualityBadge = (f.type === 'image' && qScore > 0)
+    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="Quality: ${qScore}/100 (Sharp: ${f.sharpness||0}, Res: ${f.resolution_score||0}, Size: ${f.size_score||0})">Q:${qScore}</div>` : '';
   const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
   const checkMark = isSelected ? '✓' : '';
   const folderName = getFolderFromRel(f.rel_path);
   const shortDate = formatDate(f.date);
-  // Use data attributes for click handling (avoids string escaping bugs in onclick)
   return `<div class="${selClass}" data-idx="${idx}" data-rel="${f.rel_path}">
     <div class="select-check">${checkMark}</div>
-    ${imgTag}${videoBadge}${faceBadge}
+    ${imgTag}${videoBadge}${faceBadge}${qualityBadge}
     <div class="info">
       <div class="name" title="${f.rel_path}">${f.name}</div>
       <div class="card-footer">
@@ -1320,18 +1322,13 @@ function similarityColor(pct) {
 }
 
 function pickSuggestedBest(relPaths) {
-  // Score each file: higher resolution + larger size = better quality
+  // Use Python-computed quality_score (sharpness + resolution + size)
   let best = null;
   let bestScore = -1;
   for (const rel of relPaths) {
     const f = getFileByRel(rel);
     if (!f) continue;
-    let resScore = 0;
-    if (f.resolution && f.resolution !== 'Unknown') {
-      const parts = f.resolution.split('x');
-      if (parts.length === 2) resScore = parseInt(parts[0]) * parseInt(parts[1]) || 0;
-    }
-    const score = resScore + (f.size_bytes || 0);
+    const score = f.quality_score || 0;
     if (score > bestScore) {
       bestScore = score;
       best = rel;
@@ -1477,8 +1474,17 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
     simHtml = '<span class="distance-badge">100%</span>';
   }
 
+  // Quality score badge
+  const qScore = fileData ? (fileData.quality_score || 0) : 0;
+  const qTooltip = fileData
+    ? `Quality: ${qScore}/100 (Sharp: ${fileData.sharpness||0}, Res: ${fileData.resolution_score||0}, Size: ${fileData.size_score||0})`
+    : '';
+  const qHtml = fileData && fileData.type === 'image'
+    ? `<span class="distance-badge" title="${qTooltip}">Q:${qScore}</span>` : '';
+
   // Suggested best badge
-  const suggestedHtml = isSuggested ? '<span class="suggested-badge">BEST</span>' : '';
+  const suggestedHtml = isSuggested
+    ? `<span class="suggested-badge" title="Best quality (sharpness + resolution + size)">BEST</span>` : '';
 
   // Keeper or set-keeper button
   let keeperHtml;
@@ -1497,6 +1503,7 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
       <div class="dup-meta">${sizeMb} MB${res ? ' · ' + res : ''} · ${date}</div>
     </div>
     ${simHtml}
+    ${qHtml}
     ${suggestedHtml}
     ${keeperHtml}
   </div>`;

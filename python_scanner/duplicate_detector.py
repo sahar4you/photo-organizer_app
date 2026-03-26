@@ -340,11 +340,12 @@ def find_near_duplicates(files, cache, root, threshold=10, exact_pairs=None):
 
 def _sort_by_keeper_priority(entries):
     """Sort file entries by keeper priority (first element = keeper).
-    Priority: shallowest path depth, earliest mtime, alphabetical rel_path."""
+    Priority: highest quality_score, shallowest path depth, earliest mtime, alphabetical."""
     return sorted(entries, key=lambda e: (
-        e["rel_path"].count("/"),  # shallowest first
-        e["mtime"],               # earliest first
-        e["rel_path"],            # alphabetical tiebreaker
+        -e.get("quality_score", 0),  # highest quality first
+        e["rel_path"].count("/"),     # shallowest first
+        e["mtime"],                   # earliest first
+        e["rel_path"],                # alphabetical tiebreaker
     ))
 
 
