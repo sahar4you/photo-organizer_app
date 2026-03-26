@@ -1,6 +1,6 @@
 {
   "name": "photo-organizer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Google Photos-style offline photo organizer with face detection",
   "main": "main.js",
   "scripts": {
