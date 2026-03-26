@@ -127,10 +127,10 @@ def compute_sharpness(filepath):
 
 def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
                            max_sharpness, max_pixels, max_size):
-    """Compute normalized quality sub-scores and final weighted score.
-    All inputs for max_* should be the dataset maximums (computed in second pass)."""
-    # Sharpness: 0-100
-    sharpness = min(100, round((sharpness_raw / max_sharpness) * 100)) if max_sharpness > 0 else 0
+    """Compute normalized quality sub-scores and final weighted score."""
+    # Clamp sharpness to avoid outliers
+    clamped = min(sharpness_raw, 1000.0)
+    sharpness = min(100, round((clamped / max_sharpness) * 100)) if max_sharpness > 0 else 0
 
     # Resolution: 0-100
     pixels = 0
@@ -148,6 +148,10 @@ def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
 
     # Weighted final score
     quality_score = round(sharpness * 0.5 + resolution_score * 0.3 + size_score * 0.2)
+
+    # Blur penalty: heavily blurry images get score halved
+    if sharpness < 20:
+        quality_score = round(quality_score * 0.5)
 
     return {
         "quality_score": quality_score,
@@ -329,7 +333,7 @@ def scan_folder(folder):
         sharpness_raw = 0.0
         if not is_video:
             thumb = make_thumbnail_b64(str(filepath))
-            sharpness_raw = compute_sharpness(str(filepath))
+            sharpness_raw = min(compute_sharpness(str(filepath)), 1000.0)
 
         face_count = 0
         if not is_video and face_cascade is not None:
@@ -361,10 +365,10 @@ def scan_folder(folder):
             "gps_lon": gps_lon,
             "thumb": thumb,
             "sharpness_raw": sharpness_raw,
-            "quality_score": 0,
-            "sharpness": 0,
-            "resolution_score": 0,
-            "size_score": 0,
+            "quality_score": None if is_video else 0,
+            "sharpness": None if is_video else 0,
+            "resolution_score": None if is_video else 0,
+            "size_score": None if is_video else 0,
             "faces": [],
             "face_count": face_count,
             "tags": [],
@@ -381,7 +385,7 @@ def scan_folder(folder):
     # ---- Quality score normalization (second pass) ----
     images = [f for f in files if f["type"] == "image"]
     if images:
-        max_sharpness = max((f["sharpness_raw"] for f in images), default=1.0) or 1.0
+        max_sharpness = min(max((f["sharpness_raw"] for f in images), default=1.0), 1000.0) or 1.0
         max_pixels = 1
         for f in images:
             res = f.get("resolution", "Unknown")

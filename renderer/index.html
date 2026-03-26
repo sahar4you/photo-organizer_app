@@ -79,14 +79,24 @@
   .card .info .card-right { font-size:10px; color:var(--text2); white-space:nowrap; flex-shrink:0; margin-left:6px; }
   .card .info .name { font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-  /* List view */
+  /* List view — default (medium) */
   .grid.list-view { display:flex; flex-direction:column; gap:4px; }
   .grid.list-view .card { display:flex; flex-direction:row; border-radius:6px; }
   .grid.list-view .card img.card-thumb { width:60px; height:60px; aspect-ratio:1; flex-shrink:0; border-radius:6px 0 0 6px; }
   .grid.list-view .card .placeholder-img { width:60px; height:60px; font-size:20px; flex-shrink:0; }
-  .grid.list-view .card .info { flex:1; display:flex; flex-direction:column; justify-content:center; min-width:0; }
+  .grid.list-view .card .info { flex:1; display:flex; flex-direction:row; align-items:center; gap:12px; min-width:0; flex-wrap:wrap; }
   .grid.list-view .card .badge { display:none; }
   .grid.list-view .card .select-check { top:50%; left:4px; transform:translateY(-50%); }
+  /* List view — S/M/L thumb sizes */
+  .grid.list-view.small .card img.card-thumb,
+  .grid.list-view.small .card .placeholder-img { width:40px; height:40px; }
+  .grid.list-view.large .card img.card-thumb,
+  .grid.list-view.large .card .placeholder-img { width:90px; height:90px; }
+  /* List view metadata layout */
+  .grid.list-view .card .info .name { min-width:140px; }
+  .grid.list-view .card .info .card-footer { flex:1; min-width:200px; }
+  .card .info .list-quality { display:none; }
+  .grid.list-view .card .info .list-quality { display:inline; font-size:10px; color:var(--accent); flex-shrink:0; margin-left:auto; }
 
   /* Progress bar */
   .progress-bar-track { width:260px; height:6px; background:var(--border); border-radius:3px; margin-top:12px; overflow:hidden; }
@@ -310,6 +320,7 @@
         <select id="sortBy">
           <option value="date_desc">Newest First</option>
           <option value="date_asc">Oldest First</option>
+          <option value="quality_desc">Best Quality</option>
           <option value="name_asc">Name A-Z</option>
           <option value="size_desc">Largest First</option>
           <option value="size_asc">Smallest First</option>
@@ -609,6 +620,11 @@ function applyFilters() {
   filtered.sort((a, b) => {
     if (sort === 'date_desc') return b.date.localeCompare(a.date);
     if (sort === 'date_asc') return a.date.localeCompare(b.date);
+    if (sort === 'quality_desc') {
+      const qa = a.quality_score ?? -1;
+      const qb = b.quality_score ?? -1;
+      return qb - qa; // null (videos) sort to bottom
+    }
     if (sort === 'name_asc') return a.name.localeCompare(b.name);
     if (sort === 'size_desc') return b.size_bytes - a.size_bytes;
     if (sort === 'size_asc') return a.size_bytes - b.size_bytes;
@@ -641,31 +657,40 @@ function renderCard(f, idx) {
   }
   const faceBadge = f.face_count > 0 ? `<div class="badge badge-face">👤 ${f.face_count}</div>` : '';
   const videoBadge = f.type === 'video' ? '<div class="badge badge-video">VIDEO</div>' : '';
-  const qScore = f.quality_score || 0;
-  const qualityBadge = (f.type === 'image' && qScore > 0)
-    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="Quality: ${qScore}/100 (Sharp: ${f.sharpness||0}, Res: ${f.resolution_score||0}, Size: ${f.size_score||0})">Q:${qScore}</div>` : '';
+  const qScore = f.quality_score;
+  const isVideo = f.type === 'video';
+  const qLabel = isVideo ? 'Video' : (qScore != null ? `Q:${qScore}` : '');
+  const qTooltip = isVideo ? '' : (qScore != null
+    ? `Quality: ${qScore}/100 (Sharp: ${f.sharpness??0}, Res: ${f.resolution_score??0}, Size: ${f.size_score??0})`
+    : '');
+  const qualityBadge = (!isVideo && qScore != null && qScore > 0)
+    ? `<div class="badge" style="right:6px;bottom:6px;top:auto;" title="${qTooltip}">${qLabel}</div>` : '';
   const tagPills = (f.tags && f.tags.length > 0) ? f.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') : '';
   const isSelected = selectMode && SELECTED_PHOTOS.has(f.rel_path);
   const selClass = selectMode ? (isSelected ? 'card selectable selected' : 'card selectable') : 'card';
   const checkMark = isSelected ? '✓' : '';
   const folderName = getFolderFromRel(f.rel_path);
   const shortDate = formatDate(f.date);
+  const res = f.resolution && f.resolution !== 'Unknown' ? f.resolution : '';
+  // List view gets extra metadata inline
+  const listQuality = `<span class="list-quality" title="${qTooltip}">${qLabel}</span>`;
   return `<div class="${selClass}" data-idx="${idx}" data-rel="${f.rel_path}">
     <div class="select-check">${checkMark}</div>
     ${imgTag}${videoBadge}${faceBadge}${qualityBadge}
     <div class="info">
       <div class="name" title="${f.rel_path}">${f.name}</div>
       <div class="card-footer">
-        <span class="card-left">${folderName ? '<span class="folder-name">' + folderName + '</span> · ' : ''}${shortDate}</span>
+        <span class="card-left">${folderName ? '<span class="folder-name">' + folderName + '</span> · ' : ''}${shortDate}${res ? ' · ' + res : ''}</span>
         <span class="card-right">${f.size_mb} MB</span>
       </div>
       ${tagPills ? '<div style="margin-top:2px;">' + tagPills + '</div>' : ''}
+      ${listQuality}
     </div>
   </div>`;
 }
 
 function getGridClass() {
-  if (viewMode === 'list') return 'grid list-view';
+  if (viewMode === 'list') return `grid list-view ${gridSize}`;
   return `grid ${gridSize}`;
 }
 
@@ -795,10 +820,20 @@ async function openLightbox(idx) {
   }
 
   document.getElementById('lbName').textContent = f.name;
-  let meta = `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
+  const folderPath = getFolderFromRel(f.rel_path);
+  let meta = '';
+  if (folderPath) meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+  meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
+  if (f.resolution && f.resolution !== 'Unknown') meta += ` · ${f.resolution}`;
   if (f.camera !== 'Unknown') meta += `<br>Camera: ${f.camera}`;
-  if (f.resolution !== 'Unknown') meta += ` · ${f.resolution}`;
+  // Quality score
+  if (f.type === 'video') {
+    meta += '<br>Type: Video';
+  } else if (f.quality_score != null) {
+    meta += `<br>Quality: <b>Q:${f.quality_score}</b> (Sharp: ${f.sharpness??0}, Res: ${f.resolution_score??0}, Size: ${f.size_score??0})`;
+  }
   if (f.faces && f.faces.length > 0) meta += `<br>👤 ${f.faces.join(', ')}`;
+  if (f.tags && f.tags.length > 0) meta += `<br>Tags: ${f.tags.join(', ')}`;
   if (f.has_gps) meta += `<br>📍 ${f.gps_lat}, ${f.gps_lon}`;
   document.getElementById('lbMeta').innerHTML = meta;
 
@@ -995,13 +1030,8 @@ function setViewMode(mode) {
   viewMode = mode;
   document.querySelectorAll('#vDate,#vGrid,#vList').forEach(b => b.classList.remove('active'));
   document.getElementById('v' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
-  // Show grid size controls only for grid mode
-  document.getElementById('gridSizeGroup').style.display = mode === 'grid' ? '' : 'none';
-  if (mode === 'list') gridSize = 'list-view';
-  else if (mode === 'grid') {
-    // Restore grid size from buttons
-    if (gridSize === 'list-view') gridSize = '';
-  }
+  // Restore gridSize from S/M/L buttons when switching modes
+  if (mode !== 'list' && gridSize === 'list-view') gridSize = '';
   render();
 }
 
