@@ -250,7 +250,15 @@ _dnn_loaded = False
 DNN_CONFIDENCE_THRESHOLD = 0.6
 
 def _get_dnn_detector():
-    """Load OpenCV DNN face detector (res10 SSD) once globally."""
+    """Load OpenCV DNN face detector (res10 SSD) once globally.
+
+    Search order for model files:
+    1. python_scanner/models/ (development)
+    2. Alongside the executable (PyInstaller frozen)
+    3. Script directory root (legacy)
+    4. OpenCV data directory
+    5. Current working directory
+    """
     global _dnn_net, _dnn_loaded
     if _dnn_loaded:
         return _dnn_net
@@ -258,15 +266,28 @@ def _get_dnn_detector():
     if not HAS_FACE:
         return None
     try:
-        model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
+        # Determine base directories to search
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(script_dir, 'models')
+
+        search_dirs = [models_dir, script_dir]
+
+        # PyInstaller frozen executable: check next to the .exe
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            search_dirs.insert(0, os.path.join(exe_dir, 'models'))
+            search_dirs.insert(1, exe_dir)
+
+        # Also check opencv data dir and cwd
+        search_dirs.extend([os.path.dirname(cv2.__file__), '.'])
+
         prototxt = None
         caffemodel = None
-        # Search for model files: bundled dir, opencv data dir, cwd
         model_names = [
             'res10_300x300_ssd_iter_140000.caffemodel',
             'res10_300x300_ssd_iter_140000_fp16.caffemodel',
         ]
-        for base in [model_dir, os.path.dirname(cv2.__file__), '.']:
+        for base in search_dirs:
             p = os.path.join(base, 'deploy.prototxt')
             if not os.path.exists(p):
                 continue
@@ -277,12 +298,14 @@ def _get_dnn_detector():
                     break
             if prototxt:
                 break
+
         if prototxt and caffemodel:
             _dnn_net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
-            log_info("DNN face detector loaded (primary)")
+            log_info("DNN face detector loaded successfully")
             log_debug(f"DNN model: {caffemodel}")
         else:
             log_info("DNN model files not found, will use Haar cascade only")
+            log_debug(f"Searched: {search_dirs}")
     except Exception as e:
         log_error(f"DNN face detector failed to load: {e}")
     return _dnn_net

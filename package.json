@@ -23,6 +23,10 @@
       {
         "from": "python_bin",
         "to": "python_bin"
+      },
+      {
+        "from": "python_scanner/models",
+        "to": "models"
       }
     ],
     "win": {

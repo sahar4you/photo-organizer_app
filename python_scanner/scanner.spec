@@ -16,7 +16,12 @@ block_cipher = None
 from PyInstaller.utils.hooks import collect_data_files
 import glob, os
 cv2_data = collect_data_files('cv2')
-# Include DNN face detector model files if present in scanner dir
+# Include DNN face detector model files from models/ subdirectory
+models_dir = os.path.join(os.path.dirname(os.path.abspath(SPEC)), 'models')
+for pattern in ['deploy.prototxt', 'res10_*.caffemodel']:
+    for f in glob.glob(os.path.join(models_dir, pattern)):
+        cv2_data.append((f, 'models'))
+# Legacy: also check scanner dir root
 for pattern in ['deploy.prototxt', 'res10_*.caffemodel']:
     for f in glob.glob(pattern):
         cv2_data.append((f, '.'))
