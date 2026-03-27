@@ -126,13 +126,14 @@ def compute_phash(filepath):
 
 def hamming_distance(hash1, hash2):
     """Compute Hamming distance between two pHash hex strings.
-    Uses imagehash built-in subtraction operator."""
+    Uses imagehash built-in subtraction operator.
+    Always returns a native Python int (not numpy int64) for JSON safety."""
     if not HAS_IMAGEHASH or hash1 is None or hash2 is None:
         return 999  # sentinel: cannot compare
     try:
         h1 = imagehash.hex_to_hash(hash1)
         h2 = imagehash.hex_to_hash(hash2)
-        return h1 - h2
+        return int(h1 - h2)  # int() to avoid numpy int64
     except Exception:
         return 999
 

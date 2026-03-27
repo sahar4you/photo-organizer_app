@@ -30,6 +30,29 @@ THUMB_SIZE = (300, 300)
 CACHE_DIR = ".cache"
 THUMBS_DIR = os.path.join(CACHE_DIR, "thumbnails")
 
+# ---- Numpy-safe JSON conversion ----
+def convert_numpy(obj):
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    try:
+        import numpy as np
+        if isinstance(obj, dict):
+            return {k: convert_numpy(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy(i) for i in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+    except ImportError:
+        pass
+    if isinstance(obj, dict):
+        return {k: convert_numpy(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy(i) for i in obj]
+    return obj
+
 # ---- JSON stdout helpers ----
 def emit_progress(value, current, total, status="scanning"):
     """Write a progress JSON line to stdout."""
@@ -39,7 +62,9 @@ def emit_progress(value, current, total, status="scanning"):
 
 def emit_result(data):
     """Write the final result JSON line to stdout."""
-    print(json.dumps({"type": "result", "data": data}), flush=True)
+    clean_data = convert_numpy(data)
+    log("[JSON] Converted numpy types for serialization")
+    print(json.dumps({"type": "result", "data": clean_data}), flush=True)
 
 def emit_error(message):
     """Write an error JSON line to stdout."""
@@ -51,8 +76,12 @@ def log(msg):
 
 # ---- EXIF ----
 def get_exif_data(filepath):
+    """Extract EXIF data using Pillow with multiple fallback strategies."""
     exif = {}
-    if not HAS_PIL: return exif
+    if not HAS_PIL:
+        return exif
+
+    # Strategy 1: Pillow _getexif() (most common)
     try:
         img = Image.open(filepath)
         raw = img._getexif()
@@ -66,7 +95,32 @@ def get_exif_data(filepath):
                     exif["GPSInfo"] = gps
                 else:
                     exif[tag] = value
-    except: pass
+            if exif:
+                return exif
+    except Exception:
+        pass
+
+    # Strategy 2: Pillow getexif() (newer API, works with more formats)
+    try:
+        img = Image.open(filepath)
+        exif_data = img.getexif()
+        if exif_data:
+            for tag_id, value in exif_data.items():
+                tag = TAGS.get(tag_id, tag_id)
+                exif[tag] = value
+            # Try to get IFD GPS data from newer API
+            try:
+                gps_ifd = exif_data.get_ifd(0x8825)
+                if gps_ifd:
+                    gps = {}
+                    for gps_id, value in gps_ifd.items():
+                        gps[GPSTAGS.get(gps_id, gps_id)] = value
+                    exif["GPSInfo"] = gps
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return exif
 
 def get_gps_coords(gps_info):
@@ -241,12 +295,13 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
             log(f"FACE-DEBUG: cv2.imread FAILED for {filepath}")
             return [], []
         h, w = img.shape[:2]
-        log(f"FACE-DEBUG: Processing {filepath} ({w}x{h})")
+        original_w, original_h = w, h
+        log(f"FACE-DEBUG: Processing {filepath} — Original: {original_w}x{original_h}")
         max_dim = 800
         if max(h, w) > max_dim:
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
-            log(f"FACE-DEBUG: Resized to {img.shape[1]}x{img.shape[0]}")
+            log(f"[IMAGE] Resized for face detection: {img.shape[1]}x{img.shape[0]} (original: {original_w}x{original_h})")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
 
@@ -487,31 +542,43 @@ def scan_folder(folder):
                     bit_depth = int(bps) if not isinstance(bps, (list, tuple)) else int(bps[0])
             except (ValueError, TypeError, IndexError):
                 pass
-            w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
-            h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
-            # Convert EXIF values (may be tuples/IFDRational) to int safely
-            try:
-                w2 = int(w2) if w2 else 0
-                h2 = int(h2) if h2 else 0
-            except (ValueError, TypeError):
-                w2, h2 = 0, 0
-            # Fallback: read actual image dimensions via PIL if EXIF is missing
-            if (not w2 or not h2) and HAS_PIL:
+            # --- Original resolution (NEVER use resized dimensions) ---
+            # Priority: 1) PIL actual pixels, 2) EXIF tags
+            exif_source = "none"
+            w2, h2 = 0, 0
+
+            # Best source: actual image dimensions via PIL (always accurate)
+            if HAS_PIL:
                 try:
                     with Image.open(str(filepath)) as pil_img:
                         w2, h2 = pil_img.size
+                        exif_source = "PIL"
                 except Exception:
                     w2, h2 = 0, 0
+
+            # Fallback: EXIF dimension tags
+            if not w2 or not h2:
+                w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
+                h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
+                try:
+                    w2 = int(w2) if w2 else 0
+                    h2 = int(h2) if h2 else 0
+                    if w2 and h2:
+                        exif_source = "EXIF"
+                except (ValueError, TypeError):
+                    w2, h2 = 0, 0
+
             if w2 and h2:
                 img_width, img_height = w2, h2
                 resolution = f"{img_width}x{img_height}"
+
             gps_info = exif.get('GPSInfo')
             if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
 
-            # EXIF debug log (first 3 images only to avoid flooding)
-            if i < 3:
-                log(f"EXIF-DEBUG: {rel_path}: camera={camera}, "
-                    f"res={img_width}x{img_height}, iso={iso}, "
+            # Log original resolution (first 5 images)
+            if i < 5:
+                log(f"[IMAGE] Original: {img_width}x{img_height} (source: {exif_source}) — {rel_path}")
+                log(f"[EXIF] Source: {exif_source} | camera={camera}, iso={iso}, "
                     f"exposure={exposure}, aperture={aperture}, "
                     f"focal={focal_length}, dpi={dpi}, "
                     f"gps={gps_lat},{gps_lon}")
