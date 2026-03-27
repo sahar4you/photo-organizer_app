@@ -249,13 +249,15 @@ _dnn_net = None
 _dnn_loaded = False
 _eye_cascade = None
 _eye_cascade_loaded = False
-DNN_CONFIDENCE_THRESHOLD = 0.7
+DNN_CONFIDENCE_THRESHOLD = 0.75
 DNN_MIN_FACE_SIZE = 80
+DNN_MIN_FACE_AREA = 5000
 DNN_MIN_FACE_AREA_RATIO = 0.02
 DNN_ASPECT_RATIO_MIN = 0.6
 DNN_ASPECT_RATIO_MAX = 1.4
 DNN_MIN_BLUR_VARIANCE = 80.0
 DNN_EDGE_MARGIN = 5
+DNN_MAX_FACES_PER_IMAGE = 5
 
 def _get_dnn_detector():
     """Load OpenCV DNN face detector (res10 SSD) once globally.
@@ -339,16 +341,17 @@ def _get_eye_cascade():
     return _eye_cascade
 
 def _detect_faces_dnn(img):
-    """Detect faces using OpenCV DNN with multi-stage quality filtering.
+    """Detect faces using OpenCV DNN with strict multi-stage quality filtering.
 
     Filters applied after DNN forward pass:
-    1. Confidence threshold (> 0.7)
+    1. Confidence threshold (> 0.75)
     2. Minimum face size (80x80)
-    3. Face area ratio (> 2% of image)
+    3. Combined area filters (absolute 5000px + relative 2% of image)
     4. Aspect ratio (0.6 - 1.4)
     5. Edge rejection (face touching image border)
     6. Blur detection (Laplacian variance > 80)
-    7. Eye validation (at least 1 eye detected inside face ROI)
+    7. Eye validation (exactly 2 eyes in upper 50% of face ROI)
+    8. Max faces cap (keep largest 5 if too many detections)
     """
     net = _get_dnn_detector()
     if net is None:
@@ -385,8 +388,11 @@ def _detect_faces_dnn(img):
             log_debug(f"DNN reject: too small ({fw}x{fh}), conf={confidence:.2f}")
             continue
 
-        # Stage 3: Face area ratio relative to image
+        # Stage 3: Combined area filters — absolute AND relative
         face_area = fw * fh
+        if face_area < DNN_MIN_FACE_AREA:
+            log_debug(f"DNN reject: area too small ({face_area}px), conf={confidence:.2f}")
+            continue
         area_ratio = face_area / img_area
         if area_ratio < DNN_MIN_FACE_AREA_RATIO:
             log_debug(f"DNN reject: area ratio too small ({area_ratio:.4f}), conf={confidence:.2f}")
@@ -411,21 +417,28 @@ def _detect_faces_dnn(img):
             log_debug(f"DNN reject: blurry (var={blur_var:.1f}), conf={confidence:.2f}")
             continue
 
-        # Stage 7: Eye validation — reject back-of-head / non-frontal faces
+        # Stage 7: Eye validation — require exactly 2 eyes (strict frontal check)
+        eye_count = 0
         if eye_cascade is not None:
-            # Search for eyes in the upper 60% of the face ROI
-            eye_region_h = int(fh * 0.6)
+            # Search for eyes in the upper 50% of the face ROI only
+            eye_region_h = int(fh * 0.5)
             eye_roi = face_gray[:eye_region_h, :]
             eyes = eye_cascade.detectMultiScale(eye_roi, scaleFactor=1.1,
                                                  minNeighbors=3, minSize=(15, 15))
-            if len(eyes) == 0:
-                log_debug(f"DNN reject: no eyes detected (back/non-frontal face), conf={confidence:.2f}")
+            eye_count = len(eyes)
+            if eye_count != 2:
+                log_debug(f"DNN reject: expected 2 eyes, found {eye_count}, conf={confidence:.2f}")
                 continue
-            log_debug(f"DNN eye check: {len(eyes)} eye(s) found")
 
         faces.append((x1, y1, fw, fh))
         log_debug(f"DNN accept: conf={confidence:.3f}, size={fw}x{fh}, "
-                  f"ratio={area_ratio:.3f}, blur={blur_var:.0f}, eyes={'Y' if eye_cascade else '?'}")
+                  f"area={face_area}, blur={blur_var:.0f}, eyes={eye_count}")
+
+    # Stage 8: Cap max faces — keep only the largest if too many detections
+    if len(faces) > DNN_MAX_FACES_PER_IMAGE:
+        log_debug(f"DNN cap: {len(faces)} faces found, keeping largest {DNN_MAX_FACES_PER_IMAGE}")
+        faces.sort(key=lambda f: f[2] * f[3], reverse=True)
+        faces = faces[:DNN_MAX_FACES_PER_IMAGE]
 
     return faces
 
