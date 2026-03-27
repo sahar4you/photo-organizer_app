@@ -228,6 +228,11 @@ ipcMain.handle('read-image', async (event, filePath) => {
   }
 });
 
+// Open file location in OS file manager
+ipcMain.handle('show-in-folder', async (event, filePath) => {
+  shell.showItemInFolder(path.resolve(filePath));
+});
+
 // Trash duplicate files (send to recycle bin)
 ipcMain.handle('trash-files', async (event, filePaths) => {
   const results = [];

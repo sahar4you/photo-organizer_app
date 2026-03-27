@@ -372,14 +372,24 @@ def _is_copy_file(rel_path):
 
 def _sort_by_keeper_priority(entries):
     """Sort file entries by keeper priority (first element = keeper).
-    Priority: quality, not-copy, path depth, mtime, name length, alphabetical."""
+
+    Priority logic:
+    1. Not a copy file (originals always beat copies)
+    2. Earliest mtime (oldest file = true original)
+    3. Highest quality score
+    4. Shortest filename (simpler name = likely original)
+    5. Shallowest path (root IMG.jpg over FolderA/IMG.jpg if same age)
+    6. Alphabetical tiebreaker
+
+    Example: IMG.jpg (root, old) > FolderA/IMG.jpg (subfolder) > IMG - Copy.jpg (copy)
+    """
     return sorted(entries, key=lambda e: (
-        -(e.get("quality_score") or 0),   # highest quality first
-        1 if _is_copy_file(e["rel_path"]) else 0,  # originals before copies
-        e["rel_path"].count("/"),          # shallowest first
-        e["mtime"],                        # earliest first
-        len(e["rel_path"]),                # shorter names first
-        e["rel_path"],                     # alphabetical tiebreaker
+        1 if _is_copy_file(e["rel_path"]) else 0,  # originals ALWAYS before copies
+        e["mtime"],                                   # earliest file = true original
+        -(e.get("quality_score") or 0),               # highest quality
+        len(e["rel_path"].rsplit('/', 1)[-1]),         # shortest filename
+        e["rel_path"].count("/"),                      # shallowest path
+        e["rel_path"],                                 # alphabetical tiebreaker
     ))
 
 

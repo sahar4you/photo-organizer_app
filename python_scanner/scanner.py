@@ -367,6 +367,7 @@ def scan_folder(folder):
         camera = ""
         resolution = ""
         img_width, img_height = 0, 0
+        iso, exposure, focal_length = None, None, None
         gps_lat, gps_lon = None, None
 
         if not is_video:
@@ -375,6 +376,29 @@ def scan_folder(folder):
             camera = str(exif.get('Make','')).strip()
             model = str(exif.get('Model','')).strip()
             if model: camera = f"{camera} {model}".strip()
+            # Extract extended EXIF metadata
+            iso = None
+            exposure = None
+            focal_length = None
+            try:
+                iso_val = exif.get('ISOSpeedRatings')
+                if iso_val:
+                    iso = int(iso_val) if not isinstance(iso_val, (list, tuple)) else int(iso_val[0])
+            except (ValueError, TypeError, IndexError):
+                pass
+            try:
+                exp_val = exif.get('ExposureTime')
+                if exp_val:
+                    exp_f = float(exp_val)
+                    exposure = f"1/{int(1/exp_f)}" if exp_f > 0 and exp_f < 1 else f"{exp_f}s"
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
+            try:
+                fl_val = exif.get('FocalLength')
+                if fl_val:
+                    focal_length = f"{float(fl_val):.0f}mm"
+            except (ValueError, TypeError):
+                pass
             w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
             h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
             # Convert EXIF values (may be tuples/IFDRational) to int safely
@@ -434,6 +458,9 @@ def scan_folder(folder):
             "resolution": resolution or "Unknown",
             "width": img_width,
             "height": img_height,
+            "iso": iso if not is_video else None,
+            "exposure": exposure if not is_video else None,
+            "focal_length": focal_length if not is_video else None,
             "has_gps": gps_lat is not None,
             "gps_lat": gps_lat,
             "gps_lon": gps_lon,
