@@ -98,7 +98,14 @@ function spawnScanner(folderPath, extraArgs) {
       }
     });
 
-    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+    proc.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      // Forward Python logs to Electron console (visible in PowerShell/terminal)
+      text.split('\n').forEach(line => {
+        if (line.trim()) console.error('[PYTHON]', line.trim());
+      });
+    });
 
     proc.on('error', (err) => {
       if (err.code === 'ENOENT') {
