@@ -120,7 +120,9 @@
   .lightbox.open { display:flex; }
   .lb-main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; min-width:0; }
   .lb-main img, .lb-main video { max-width:100%; max-height:80vh; border-radius:8px; object-fit:contain; }
-  .lightbox .lb-close { position:absolute; top:14px; right:14px; font-size:28px; color:var(--text); cursor:pointer; background:none; border:none; z-index:5; }
+  .lb-toolbar { position:absolute; top:14px; right:14px; display:flex; gap:8px; z-index:5; }
+  .lb-toolbar button { font-size:20px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:4px 10px; border-radius:6px; }
+  .lb-toolbar button:hover { background:var(--accent); color:#000; }
   .lightbox .lb-nav { position:absolute; top:50%; transform:translateY(-50%); font-size:32px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:6px 12px; border-radius:8px; z-index:5; }
   .lightbox .lb-prev { left:14px; }
   .lightbox .lb-next { right:14px; }
@@ -134,8 +136,6 @@
   .lb-side .lb-actions { display:flex; gap:6px; margin-top:auto; }
   .lb-side .lb-actions button { flex:1; padding:6px; font-size:11px; border-radius:6px; cursor:pointer; border:none; background:var(--card); color:var(--text); }
   .lb-side .lb-actions button:hover { background:var(--accent); color:#000; }
-  .lb-toggle { position:absolute; top:14px; right:300px; font-size:18px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:4px 10px; border-radius:6px; z-index:5; }
-  .lb-toggle.panel-hidden { right:14px; }
 
   /* Face Manager Modal */
   .modal-overlay { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); z-index:450; justify-content:center; align-items:center; }
@@ -443,8 +443,10 @@
 <!-- Lightbox -->
 <div class="lightbox" id="lightbox">
   <div class="lb-main">
-    <button class="lb-close" onclick="closeLightbox()">×</button>
-    <button class="lb-toggle" id="lbToggle" onclick="toggleLbPanel()">i</button>
+    <div class="lb-toolbar">
+      <button onclick="toggleLbPanel()" title="Toggle info panel">i</button>
+      <button onclick="closeLightbox()" title="Close">×</button>
+    </div>
     <button class="lb-nav lb-prev" onclick="navLightbox(-1)">‹</button>
     <button class="lb-nav lb-next" onclick="navLightbox(1)">›</button>
     <div id="lbMedia"></div>
@@ -1002,7 +1004,6 @@ let lbPanelVisible = true;
 function toggleLbPanel() {
   lbPanelVisible = !lbPanelVisible;
   document.getElementById('lbSide').classList.toggle('hidden', !lbPanelVisible);
-  document.getElementById('lbToggle').classList.toggle('panel-hidden', !lbPanelVisible);
 }
 
 async function openLightbox(idx) {
@@ -1032,12 +1033,16 @@ async function openLightbox(idx) {
   side += `<div><h4>File Info</h4><div class="lb-val">`;
   side += `${f.date}<br>${f.size_mb} MB · ${f.ext.toUpperCase()}`;
   side += `</div></div>`;
-  // Resolution
+  // Resolution + technical details
   const resFull = formatResolution(f);
   const usage = usageLabel(f);
   if (resFull) {
     side += `<div><h4>Resolution</h4><div class="lb-val">${resFull}`;
     if (usage) side += `<br><span style="color:var(--accent2);font-size:11px;">${usage}</span>`;
+    const techParts = [];
+    if (f.dpi) techParts.push(`${f.dpi} DPI`);
+    if (f.bit_depth) techParts.push(`${f.bit_depth}-bit`);
+    if (techParts.length > 0) side += `<br><span style="color:var(--text2);font-size:11px;">${techParts.join(' · ')}</span>`;
     side += `</div></div>`;
   }
   // Camera + EXIF
@@ -1045,6 +1050,7 @@ async function openLightbox(idx) {
     side += `<div><h4>Camera</h4><div class="lb-val">${f.camera}`;
     const exifParts = [];
     if (f.iso) exifParts.push(`ISO ${f.iso}`);
+    if (f.aperture) exifParts.push(f.aperture);
     if (f.exposure) exifParts.push(f.exposure);
     if (f.focal_length) exifParts.push(f.focal_length);
     if (exifParts.length > 0) side += `<br><span style="color:var(--text2)">${exifParts.join(' · ')}</span>`;

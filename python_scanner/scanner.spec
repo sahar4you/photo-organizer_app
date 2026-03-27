@@ -12,9 +12,14 @@ import os
 
 block_cipher = None
 
-# Collect data files needed by OpenCV (Haar cascades)
+# Collect data files needed by OpenCV (Haar cascades + DNN models)
 from PyInstaller.utils.hooks import collect_data_files
+import glob, os
 cv2_data = collect_data_files('cv2')
+# Include DNN face detector model files if present in scanner dir
+for pattern in ['deploy.prototxt', 'res10_*.caffemodel']:
+    for f in glob.glob(pattern):
+        cv2_data.append((f, '.'))
 
 a = Analysis(
     ['scanner.py'],
