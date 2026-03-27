@@ -8,6 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from io import BytesIO
 
+# ---- Debug flag (env-controlled) ----
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
 try:
     from PIL import Image
     from PIL.ExifTags import TAGS, GPSTAGS
@@ -29,6 +32,20 @@ MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 THUMB_SIZE = (300, 300)
 CACHE_DIR = ".cache"
 THUMBS_DIR = os.path.join(CACHE_DIR, "thumbnails")
+
+# ---- Log level system ----
+def log_info(msg):
+    """Always-visible info log to stderr."""
+    print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+
+def log_debug(msg):
+    """Debug log to stderr — only visible when DEBUG=true."""
+    if DEBUG:
+        print(f"[DEBUG] {msg}", file=sys.stderr, flush=True)
+
+def log_error(msg):
+    """Always-visible error log to stderr."""
+    print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
 # ---- Numpy-safe JSON conversion ----
 def convert_numpy(obj):
@@ -63,16 +80,12 @@ def emit_progress(value, current, total, status="scanning"):
 def emit_result(data):
     """Write the final result JSON line to stdout."""
     clean_data = convert_numpy(data)
-    log("[JSON] Converted numpy types for serialization")
+    log_debug("Converted numpy types for JSON serialization")
     print(json.dumps({"type": "result", "data": clean_data}), flush=True)
 
 def emit_error(message):
     """Write an error JSON line to stdout."""
     print(json.dumps({"type": "error", "message": message}), flush=True)
-
-def log(msg):
-    """Write a log message to stderr (never stdout)."""
-    print(msg, file=sys.stderr, flush=True)
 
 # ---- EXIF ----
 def get_exif_data(filepath):
@@ -257,11 +270,11 @@ def _get_dnn_detector():
                 break
         if prototxt and caffemodel:
             _dnn_net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
-            log(f"DNN face detector loaded from {prototxt}")
+            log_debug(f"DNN face detector loaded from {prototxt}")
         else:
-            log("DNN face detector model files not found (optional fallback)")
+            log_debug("DNN face detector model files not found (optional fallback)")
     except Exception as e:
-        log(f"DNN face detector failed to load: {e}")
+        log_error(f"DNN face detector failed to load: {e}")
     return _dnn_net
 
 def _detect_faces_dnn(img):
@@ -292,16 +305,16 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
     try:
         img = cv2.imread(str(filepath))
         if img is None:
-            log(f"FACE-DEBUG: cv2.imread FAILED for {filepath}")
+            log_debug(f"cv2.imread failed for {filepath}")
             return [], []
         h, w = img.shape[:2]
         original_w, original_h = w, h
-        log(f"FACE-DEBUG: Processing {filepath} — Original: {original_w}x{original_h}")
+        log_debug(f"Face processing {filepath} ({original_w}x{original_h})")
         max_dim = 800
         if max(h, w) > max_dim:
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
-            log(f"[IMAGE] Resized for face detection: {img.shape[1]}x{img.shape[0]} (original: {original_w}x{original_h})")
+            log_debug(f"Resized for face detection: {img.shape[1]}x{img.shape[0]} (original: {original_w}x{original_h})")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
 
@@ -310,7 +323,7 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
         for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3), (1.05, 2)]:
             faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
             if len(faces) > 0:
-                log(f"FACE-DEBUG: Haar frontal found {len(faces)} face(s) with sf={sf},mn={mn}")
+                log_debug(f"Haar frontal found {len(faces)} face(s) with sf={sf},mn={mn}")
                 break
 
         # Try profile cascade if frontal found nothing
@@ -318,24 +331,24 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
             for sf, mn in [(1.1, 5), (1.05, 3)]:
                 faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
                 if len(faces) > 0:
-                    log(f"FACE-DEBUG: Haar profile found {len(faces)} face(s) with sf={sf},mn={mn}")
+                    log_debug(f"Haar profile found {len(faces)} face(s) with sf={sf},mn={mn}")
                     break
 
         # DNN fallback: much more accurate for selfies, rotated/tilted faces
         if len(faces) == 0:
-            log(f"FACE-DEBUG: Haar found 0 faces, trying DNN fallback...")
+            log_debug(f"Haar found 0 faces, trying DNN fallback...")
             dnn_faces = _detect_faces_dnn(img)
             if dnn_faces:
                 faces = dnn_faces
-                log(f"FACE-DEBUG: DNN detected {len(faces)} face(s)")
+                log_debug(f"DNN detected {len(faces)} face(s)")
             else:
-                log(f"FACE-DEBUG: DNN also found 0 faces")
+                log_debug(f"DNN also found 0 faces")
 
         if len(faces) == 0:
-            log(f"FACE-DEBUG: FINAL RESULT: 0 faces in {filepath}")
+            log_debug(f"No faces in {filepath}")
             return [], []
 
-        log(f"FACE-DEBUG: FINAL RESULT: {len(faces)} face(s) in {filepath}")
+        log_debug(f"Found {len(faces)} face(s) in {filepath}")
         rects, embeddings = [], []
         for (fx,fy,fw,fh) in faces:
             rects.append((fx,fy,fw,fh))
@@ -445,28 +458,31 @@ def scan_folder(folder):
     all_media = _collect_media_files(folder)
     total_count = len(all_media)
 
+    log_info(f"Found {total_count} media files")
+
     # Warn if large library
     if total_count > 3000:
-        log(f"Warning: {total_count} files found. Scanning may take a while.")
+        log_info(f"Large library ({total_count} files), scanning may take a while")
 
     face_cascade, profile_cascade = None, None
     all_face_data = []
-    log(f"FACE-DEBUG: HAS_FACE={HAS_FACE}, cv2 available={HAS_FACE}")
+    log_debug(f"HAS_FACE={HAS_FACE}, cv2 available={HAS_FACE}")
     if HAS_FACE:
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml'
         profile_path = cv2.data.haarcascades + 'haarcascade_profileface.xml'
         face_cascade = cv2.CascadeClassifier(cascade_path)
         profile_cascade = cv2.CascadeClassifier(profile_path)
         if face_cascade.empty():
-            log(f"FACE ERROR: Failed to load frontal cascade from {cascade_path}")
+            log_error(f"Failed to load frontal cascade from {cascade_path}")
             face_cascade = None
         else:
-            log(f"Face cascade loaded OK from {cascade_path}")
+            log_info("Face detection enabled")
+            log_debug(f"Face cascade loaded from {cascade_path}")
         if profile_cascade is not None and profile_cascade.empty():
-            log(f"FACE WARNING: Profile cascade failed from {profile_path}")
+            log_debug(f"Profile cascade failed from {profile_path}")
             profile_cascade = None
     else:
-        log("Face detection unavailable: cv2/numpy/sklearn not installed")
+        log_info("Face detection unavailable (cv2/numpy/sklearn not installed)")
 
     for i, (filepath, rel_path) in enumerate(all_media):
         name = filepath.name
@@ -575,13 +591,12 @@ def scan_folder(folder):
             gps_info = exif.get('GPSInfo')
             if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
 
-            # Log original resolution (first 5 images)
+            # Log original resolution (first 5 images, debug only)
             if i < 5:
-                log(f"[IMAGE] Original: {img_width}x{img_height} (source: {exif_source}) — {rel_path}")
-                log(f"[EXIF] Source: {exif_source} | camera={camera}, iso={iso}, "
-                    f"exposure={exposure}, aperture={aperture}, "
-                    f"focal={focal_length}, dpi={dpi}, "
-                    f"gps={gps_lat},{gps_lon}")
+                log_debug(f"Resolution: {img_width}x{img_height} (source: {exif_source}) - {rel_path}")
+                log_debug(f"EXIF: camera={camera}, iso={iso}, exposure={exposure}, "
+                          f"aperture={aperture}, focal={focal_length}, dpi={dpi}, "
+                          f"gps={gps_lat},{gps_lon}")
 
         if not date_taken: date_taken = get_date_from_filename(name)
         if not date_taken: date_taken = mod_time
@@ -598,7 +613,7 @@ def scan_folder(folder):
             face_thumbs = extract_face_thumbs_cv(str(filepath), rects) if rects else []
             face_count = len(rects)
             if face_count > 0:
-                log(f"Face: {face_count} face(s) in {rel_path}")
+                log_debug(f"Face: {face_count} face(s) in {rel_path}")
             file_idx = len(files)
             for fi, emb in enumerate(embeddings):
                 ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
@@ -645,13 +660,13 @@ def scan_folder(folder):
         }
         files.append(entry)
         pct = int((i+1)/total_count*100) if total_count else 100
-        log(f"Scanning: {pct}% ({i+1}/{total_count}) — {rel_path[:50]}")
         # Emit JSON progress to stdout every 10 files
         if (i + 1) % 10 == 0 or (i + 1) == total_count:
+            log_info(f"[SCAN] {pct}% ({i+1}/{total_count})")
             emit_progress(pct, i + 1, total_count, "scanning")
 
     total_faces = sum(1 for f in files if f.get("face_count", 0) > 0)
-    log(f"Scanned {len(files)} media files. {total_faces} with faces, {len(all_face_data)} face embeddings.")
+    log_info(f"Scanned {len(files)} files. Faces detected: {total_faces} images, {len(all_face_data)} embeddings")
 
     # ---- Quality score normalization (second pass) ----
     images = [f for f in files if f["type"] == "image"]
@@ -692,7 +707,7 @@ def scan_folder(folder):
     person_thumbs = {}
     if face_cascade and all_face_data:
         emit_progress(100, total_count, total_count, "clustering faces")
-        log("Clustering faces...")
+        log_info("Clustering faces...")
         file_faces, person_thumbs = cluster_faces(all_face_data)
         for file_idx, persons in file_faces.items():
             if file_idx < len(files):
@@ -728,12 +743,12 @@ def scan_folder(folder):
         from duplicate_detector import detect_duplicates
         dry_run = "--move-duplicates" not in sys.argv
         emit_progress(100, total_count, total_count, "detecting duplicates")
-        log("Running duplicate detection...")
+        log_info("Running duplicate detection...")
         duplicate_result = detect_duplicates(files, folder, threshold=10, dry_run=dry_run)
     except ImportError:
-        log("Warning: duplicate_detector module not found, skipping.")
+        log_info("Duplicate detector module not found, skipping")
     except Exception as e:
-        log(f"Warning: Duplicate detection failed: {e}")
+        log_error(f"Duplicate detection failed: {e}")
 
     return files, person_thumbs, duplicate_result
 
@@ -768,14 +783,10 @@ if __name__ == "__main__":
         result["duplicate_stats"] = duplicate_result["stats"]
         result["duplicate_moved"] = duplicate_result["moved"]
 
-    if json_mode:
-        emit_result(result)
-    else:
-        # Human-readable output to stderr for non-JSON mode
-        log(f"Total: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
-        if duplicate_result:
-            s = duplicate_result["stats"]
-            log(f"Duplicates: {s['exact_groups']} exact groups, "
-                f"{s['near_groups']} near groups, "
-                f"{s['duplicates_found']} total duplicates found")
-        emit_result(result)
+    log_info(f"Complete: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
+    if duplicate_result:
+        s = duplicate_result["stats"]
+        log_info(f"Duplicate groups found: {s['exact_groups']} exact, "
+                 f"{s['near_groups']} near, {s['duplicates_found']} total duplicates")
+
+    emit_result(result)
