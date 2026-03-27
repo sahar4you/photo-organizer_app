@@ -372,14 +372,14 @@ def _is_copy_file(rel_path):
 
 def _sort_by_keeper_priority(entries):
     """Sort file entries by keeper priority (first element = keeper).
-    Priority: quality, not-copy, path depth, mtime, name length, alphabetical."""
+    Priority: not-copy, quality, deeper path (original folder preferred), mtime, name length."""
     return sorted(entries, key=lambda e: (
-        -(e.get("quality_score") or 0),   # highest quality first
-        1 if _is_copy_file(e["rel_path"]) else 0,  # originals before copies
-        e["rel_path"].count("/"),          # shallowest first
-        e["mtime"],                        # earliest first
-        len(e["rel_path"]),                # shorter names first
-        e["rel_path"],                     # alphabetical tiebreaker
+        1 if _is_copy_file(e["rel_path"]) else 0,  # originals ALWAYS before copies
+        -(e.get("quality_score") or 0),              # highest quality first
+        -e["rel_path"].count("/"),                    # DEEPER path first (original folder)
+        e["mtime"],                                   # earliest first
+        len(e["rel_path"]),                           # shorter names first
+        e["rel_path"],                                # alphabetical tiebreaker
     ))
 
 

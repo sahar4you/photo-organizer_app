@@ -116,20 +116,26 @@
   .loading .progress-text { color:var(--text); font-size:14px; margin-top:16px; }
 
   /* Lightbox */
-  .lightbox { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.95); z-index:400; flex-direction:column; align-items:center; justify-content:center; }
+  .lightbox { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.95); z-index:400; flex-direction:row; align-items:stretch; }
   .lightbox.open { display:flex; }
-  .lightbox img, .lightbox video { max-width:90vw; max-height:75vh; border-radius:8px; }
-  .lightbox .lb-close { position:absolute; top:14px; right:20px; font-size:28px; color:var(--text); cursor:pointer; background:none; border:none; }
-  .lightbox .lb-nav { position:absolute; top:50%; transform:translateY(-50%); font-size:32px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:6px 12px; border-radius:8px; }
+  .lb-main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; min-width:0; }
+  .lb-main img, .lb-main video { max-width:100%; max-height:80vh; border-radius:8px; object-fit:contain; }
+  .lightbox .lb-close { position:absolute; top:14px; right:14px; font-size:28px; color:var(--text); cursor:pointer; background:none; border:none; z-index:5; }
+  .lightbox .lb-nav { position:absolute; top:50%; transform:translateY(-50%); font-size:32px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:6px 12px; border-radius:8px; z-index:5; }
   .lightbox .lb-prev { left:14px; }
   .lightbox .lb-next { right:14px; }
-  .lb-info { color:var(--text); padding:14px; text-align:center; max-width:600px; }
-  .lb-info .lb-name { font-size:15px; font-weight:600; }
-  .lb-info .lb-meta { font-size:12px; color:var(--text2); margin-top:4px; line-height:1.8; }
-  .lb-meta .lb-section { margin-top:4px; }
-  .lb-meta .lb-breakdown { font-size:11px; color:var(--text2); white-space:nowrap; display:inline-block; }
-  .lb-meta .lb-reason { font-size:11px; color:var(--text2); font-style:italic; }
-  .lb-meta .lb-usage { font-size:11px; color:var(--accent2); }
+  .lb-main .lb-name-bar { color:var(--text); font-size:14px; font-weight:600; padding:10px; text-align:center; }
+  /* Side info panel */
+  .lb-side { width:280px; min-width:280px; background:var(--surface); border-left:1px solid var(--border); overflow-y:auto; padding:16px; color:var(--text); display:flex; flex-direction:column; gap:10px; }
+  .lb-side.hidden { display:none; }
+  .lb-side h4 { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin:0; }
+  .lb-side .lb-val { font-size:12px; line-height:1.6; }
+  .lb-side .lb-val b { color:var(--accent); }
+  .lb-side .lb-actions { display:flex; gap:6px; margin-top:auto; }
+  .lb-side .lb-actions button { flex:1; padding:6px; font-size:11px; border-radius:6px; cursor:pointer; border:none; background:var(--card); color:var(--text); }
+  .lb-side .lb-actions button:hover { background:var(--accent); color:#000; }
+  .lb-toggle { position:absolute; top:14px; right:300px; font-size:18px; color:var(--text); cursor:pointer; background:rgba(0,0,0,0.5); border:none; padding:4px 10px; border-radius:6px; z-index:5; }
+  .lb-toggle.panel-hidden { right:14px; }
 
   /* Face Manager Modal */
   .modal-overlay { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); z-index:450; justify-content:center; align-items:center; }
@@ -436,14 +442,15 @@
 
 <!-- Lightbox -->
 <div class="lightbox" id="lightbox">
-  <button class="lb-close" onclick="closeLightbox()">×</button>
-  <button class="lb-nav lb-prev" onclick="navLightbox(-1)">‹</button>
-  <button class="lb-nav lb-next" onclick="navLightbox(1)">›</button>
-  <div id="lbMedia"></div>
-  <div class="lb-info">
-    <div class="lb-name" id="lbName"></div>
-    <div class="lb-meta" id="lbMeta"></div>
+  <div class="lb-main">
+    <button class="lb-close" onclick="closeLightbox()">×</button>
+    <button class="lb-toggle" id="lbToggle" onclick="toggleLbPanel()">i</button>
+    <button class="lb-nav lb-prev" onclick="navLightbox(-1)">‹</button>
+    <button class="lb-nav lb-next" onclick="navLightbox(1)">›</button>
+    <div id="lbMedia"></div>
+    <div class="lb-name-bar" id="lbName"></div>
   </div>
+  <div class="lb-side" id="lbSide"></div>
 </div>
 
 <!-- Help Modal -->
@@ -990,6 +997,14 @@ function initLazyThumbs() {
 }
 
 // ---- Lightbox ----
+let lbPanelVisible = true;
+
+function toggleLbPanel() {
+  lbPanelVisible = !lbPanelVisible;
+  document.getElementById('lbSide').classList.toggle('hidden', !lbPanelVisible);
+  document.getElementById('lbToggle').classList.toggle('panel-hidden', !lbPanelVisible);
+}
+
 async function openLightbox(idx) {
   currentLbIndex = idx;
   const f = filtered[idx];
@@ -997,51 +1012,74 @@ async function openLightbox(idx) {
   const media = document.getElementById('lbMedia');
 
   if (f.type === 'video') {
-    media.innerHTML = `<video src="file://${f.path}" controls autoplay style="max-width:90vw;max-height:75vh;border-radius:8px;"></video>`;
+    media.innerHTML = `<video src="file://${f.path}" controls autoplay style="max-width:100%;max-height:80vh;border-radius:8px;"></video>`;
   } else {
-    // Load full image via IPC
     const dataUrl = await window.api.readImage(f.path);
     media.innerHTML = dataUrl
-      ? `<img src="${dataUrl}" style="max-width:90vw;max-height:75vh;border-radius:8px;">`
+      ? `<img src="${dataUrl}">`
       : `<div style="color:var(--text2);padding:40px;">Could not load image</div>`;
   }
 
   document.getElementById('lbName').textContent = f.name;
-  let meta = '';
-  // 1. Folder path (respects setting)
+
+  // Build side panel
+  let side = '';
+  // Folder
   if (showFolderName) {
-    const folderPath = getFullFolderPath(f.rel_path);
-    meta += `<span style="color:var(--accent)">${folderPath}</span><br>`;
+    side += `<div><h4>Folder</h4><div class="lb-val">${getFullFolderPath(f.rel_path)}</div></div>`;
   }
-  // 2. Date · Size · Type
-  meta += `${f.date} · ${f.size_mb} MB · ${f.ext.toUpperCase()}`;
-  // 3. Resolution with MP + Usage
+  // Date + File info
+  side += `<div><h4>File Info</h4><div class="lb-val">`;
+  side += `${f.date}<br>${f.size_mb} MB · ${f.ext.toUpperCase()}`;
+  side += `</div></div>`;
+  // Resolution
   const resFull = formatResolution(f);
   const usage = usageLabel(f);
   if (resFull) {
-    meta += `<div class="lb-section">${resFull}`;
-    if (usage) meta += `<br><span class="lb-usage">${usage}</span>`;
-    meta += '</div>';
+    side += `<div><h4>Resolution</h4><div class="lb-val">${resFull}`;
+    if (usage) side += `<br><span style="color:var(--accent2);font-size:11px;">${usage}</span>`;
+    side += `</div></div>`;
   }
-  // 4. Camera
-  if (f.camera && f.camera !== 'Unknown') meta += `Camera: ${f.camera}<br>`;
-  // 5. Quality block — single-line breakdown
+  // Camera + EXIF
+  if (f.camera && f.camera !== 'Unknown') {
+    side += `<div><h4>Camera</h4><div class="lb-val">${f.camera}`;
+    const exifParts = [];
+    if (f.iso) exifParts.push(`ISO ${f.iso}`);
+    if (f.exposure) exifParts.push(f.exposure);
+    if (f.focal_length) exifParts.push(f.focal_length);
+    if (exifParts.length > 0) side += `<br><span style="color:var(--text2)">${exifParts.join(' · ')}</span>`;
+    side += `</div></div>`;
+  }
+  // Quality
   if (f.type === 'video') {
-    meta += '<div class="lb-section">Type: Video</div>';
+    side += `<div><h4>Type</h4><div class="lb-val">Video</div></div>`;
   } else if (f.quality_score != null) {
-    meta += `<div class="lb-section">Quality: <b>Q:${f.quality_score} (${f.quality_label||''})</b></div>`;
-    meta += `<span class="lb-breakdown">${qualityBreakdownLine(f)}</span>`;
+    side += `<div><h4>Quality</h4><div class="lb-val">`;
+    side += `<b>Q:${f.quality_score} (${f.quality_label||''})</b><br>`;
+    side += `<span style="font-size:11px;">${qualityBreakdownLine(f)}</span>`;
     const reason = qualityReason(f.sharpness, f.resolution_score, f.size_score);
-    if (reason) meta += `<br><span class="lb-reason">Reason: ${reason}</span>`;
+    if (reason) side += `<br><span style="font-size:11px;font-style:italic;">${reason}</span>`;
+    side += `</div></div>`;
   }
-  // 6. Faces
-  if (f.faces && f.faces.length > 0) meta += `<div class="lb-section">👤 ${f.faces.join(', ')}</div>`;
-  // 7. Tags
-  if (f.tags && f.tags.length > 0) meta += `<div class="lb-section">Tags: ${f.tags.join(', ')}</div>`;
-  // 8. GPS
-  if (f.has_gps) meta += `<div class="lb-section">📍 ${f.gps_lat}, ${f.gps_lon}</div>`;
-  document.getElementById('lbMeta').innerHTML = meta;
+  // Faces
+  if (f.faces && f.faces.length > 0) {
+    side += `<div><h4>Faces</h4><div class="lb-val">👤 ${f.faces.join(', ')}</div></div>`;
+  }
+  // Tags
+  if (f.tags && f.tags.length > 0) {
+    side += `<div><h4>Tags</h4><div class="lb-val">${f.tags.map(t => `<span class="tag-pill">${t}</span>`).join(' ')}</div></div>`;
+  }
+  // GPS
+  if (f.has_gps) {
+    side += `<div><h4>Location</h4><div class="lb-val">📍 ${f.gps_lat}, ${f.gps_lon}</div></div>`;
+  }
+  // Actions
+  side += `<div class="lb-actions">`;
+  side += `<button onclick="window.api.showInFolder('${f.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">Open Folder</button>`;
+  side += `</div>`;
 
+  document.getElementById('lbSide').innerHTML = side;
+  document.getElementById('lbSide').classList.toggle('hidden', !lbPanelVisible);
   lb.classList.add('open');
 }
 
@@ -1649,18 +1687,17 @@ function isCopyFile(relPath) {
 }
 
 function pickSuggestedBest(relPaths) {
-  // Pick best file: highest quality, prefer originals over copies, shorter paths
-  // COPY files are NEVER selected as BEST if any non-copy exists
+  // Pick best file: originals over copies, highest quality, deeper path preferred
   let best = null;
   let bestKey = null;
   for (const rel of relPaths) {
     const f = getFileByRel(rel);
     if (!f) continue;
     const key = [
-      isCopyFile(rel) ? 1 : 0,         // originals first (CRITICAL)
-      -(f.quality_score || 0),           // highest quality
-      rel.split('/').length,             // shallowest path
-      rel.length,                        // shortest name
+      isCopyFile(rel) ? 1 : 0,          // originals ALWAYS first
+      -(f.quality_score || 0),            // highest quality
+      -(rel.split('/').length),           // DEEPER path first (original folder)
+      rel.length,                         // shortest name
     ];
     if (!bestKey || compareTuples(key, bestKey) < 0) {
       best = rel;
