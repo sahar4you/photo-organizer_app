@@ -207,9 +207,20 @@ async function spawnScanner(folderPath, extraArgs) {
     proc.stderr.on('data', (data) => {
       const text = data.toString();
       stderr += text;
-      // Forward Python logs to Electron console (visible in PowerShell/terminal)
+      // Forward Python logs to Electron console — filter by log level
       text.split('\n').forEach(line => {
-        if (line.trim()) console.error('[PYTHON]', line.trim());
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        // Always show INFO and ERROR, suppress DEBUG in production
+        if (trimmed.startsWith('[DEBUG]')) return;
+        if (trimmed.startsWith('[INFO]')) {
+          console.log('[PYTHON]', trimmed);
+        } else if (trimmed.startsWith('[ERROR]')) {
+          console.error('[PYTHON]', trimmed);
+        } else {
+          // Legacy/untagged lines — show as info
+          console.log('[PYTHON]', trimmed);
+        }
       });
     });
 

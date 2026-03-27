@@ -17,6 +17,19 @@ import shutil
 from pathlib import Path
 from collections import defaultdict
 
+# ---- Debug flag (env-controlled, shared with scanner) ----
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+def log_info(msg):
+    print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+
+def log_debug(msg):
+    if DEBUG:
+        print(f"[DEBUG] {msg}", file=sys.stderr, flush=True)
+
+def log_error(msg):
+    print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
+
 try:
     from PIL import Image
     import imagehash
@@ -74,7 +87,7 @@ def save_hash_cache(folder, cache):
         with open(cache_path, "w") as f:
             json.dump(cache, f, indent=2)
     except IOError as e:
-        print(f"Warning: Could not save hash cache: {e}", file=sys.stderr)
+        log_error(f"Could not save hash cache: {e}")
 
 
 def prune_cache(cache, existing_rel_paths):
@@ -209,7 +222,7 @@ def find_exact_duplicates(files, cache, root):
                 try:
                     file_hash = compute_file_hash(abs_path)
                 except (IOError, OSError) as e:
-                    print(f"Warning: Cannot hash {rel}: {e}", file=sys.stderr)
+                    log_error(f"Cannot hash {rel}: {e}")
                     continue
 
             # Update cache
@@ -255,8 +268,7 @@ def find_near_duplicates(files, cache, root, threshold=10, exact_pairs=None):
       "duplicates": [...], "members": [{"rel_path": ..., "distance": ...}]}]
     """
     if not HAS_IMAGEHASH:
-        print("Warning: imagehash not installed, skipping near-duplicate detection.",
-              file=sys.stderr)
+        log_info("imagehash not installed, skipping near-duplicate detection")
         return []
 
     if exact_pairs is None:
@@ -268,9 +280,8 @@ def find_near_duplicates(files, cache, root, threshold=10, exact_pairs=None):
     # Safety check for O(n^2)
     if len(images) > 3000:
         pair_count = len(images) * (len(images) - 1) // 2
-        print(f"Warning: Near-duplicate scan: {len(images)} images = "
-              f"{pair_count:,} pairwise comparisons. This may take a while.",
-              file=sys.stderr)
+        log_info(f"Near-duplicate scan: {len(images)} images = "
+                 f"{pair_count:,} pairwise comparisons, may take a while")
 
     # Compute pHash for all images (using cache)
     image_hashes = []  # list of (entry, phash_str)
@@ -285,7 +296,7 @@ def find_near_duplicates(files, cache, root, threshold=10, exact_pairs=None):
         else:
             phash_str = compute_phash(abs_path)
             if phash_str is None:
-                print(f"Warning: Cannot compute pHash for {rel}", file=sys.stderr)
+                log_debug(f"Cannot compute pHash for {rel}")
                 continue
 
         # Update cache
@@ -483,10 +494,10 @@ def move_duplicates(duplicate_groups, root, dry_run=True):
             # Clean up empty source directories
             _remove_empty_parents(src, root)
         except PermissionError as e:
-            print(f"Warning: Permission denied moving {rel}: {e}", file=sys.stderr)
+            log_error(f"Permission denied moving {rel}: {e}")
             moved.append({"source": rel, "destination": "", "status": "error_permission"})
         except OSError as e:
-            print(f"Warning: Cannot move {rel}: {e}", file=sys.stderr)
+            log_error(f"Cannot move {rel}: {e}")
             moved.append({"source": rel, "destination": "", "status": "error"})
 
     return moved
@@ -520,10 +531,10 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
     rel_paths = [f["rel_path"] for f in files]
     pruned = prune_cache(cache, rel_paths)
     if pruned > 0:
-        print(f"Cache: pruned {pruned} stale entries.", file=sys.stderr)
+        log_debug(f"Cache: pruned {pruned} stale entries")
 
     # Step 2: Find exact duplicates (Layer 3 + Layer 1)
-    print("Detecting exact duplicates (MD5)...", file=sys.stderr)
+    log_info("Detecting exact duplicates (MD5)...")
     exact_groups = find_exact_duplicates(files, cache, folder)
 
     # Build exact-pair set for Layer 2 exclusion
@@ -535,7 +546,7 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
                 exact_pairs.add(frozenset((all_in_group[i], all_in_group[j])))
 
     # Step 3: Find near duplicates (Layer 2)
-    print("Detecting near duplicates (pHash)...", file=sys.stderr)
+    log_info("Detecting near duplicates (pHash)...")
     near_groups = find_near_duplicates(files, cache, folder, threshold, exact_pairs)
 
     # Step 4: Save updated cache
