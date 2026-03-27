@@ -355,14 +355,31 @@ def find_near_duplicates(files, cache, root, threshold=10, exact_pairs=None):
 # Keeper selection
 # ---------------------------------------------------------------------------
 
+import re as _re
+
+def _is_copy_file(rel_path):
+    """Detect if a file is likely a copy based on naming patterns."""
+    name = rel_path.rsplit('/', 1)[-1].rsplit('\\', 1)[-1].lower()
+    stem = name.rsplit('.', 1)[0] if '.' in name else name
+    if 'copy' in stem or 'kopie' in stem:
+        return True
+    # Match patterns like "file (1)", "file (2)", "file - Copy"
+    if _re.search(r'\(\d+\)$', stem.strip()):
+        return True
+    if _re.search(r' - \d+$', stem.strip()):
+        return True
+    return False
+
 def _sort_by_keeper_priority(entries):
     """Sort file entries by keeper priority (first element = keeper).
-    Priority: highest quality_score, shallowest path depth, earliest mtime, alphabetical."""
+    Priority: quality, not-copy, path depth, mtime, name length, alphabetical."""
     return sorted(entries, key=lambda e: (
-        -e.get("quality_score", 0),  # highest quality first
-        e["rel_path"].count("/"),     # shallowest first
-        e["mtime"],                   # earliest first
-        e["rel_path"],                # alphabetical tiebreaker
+        -(e.get("quality_score") or 0),   # highest quality first
+        1 if _is_copy_file(e["rel_path"]) else 0,  # originals before copies
+        e["rel_path"].count("/"),          # shallowest first
+        e["mtime"],                        # earliest first
+        len(e["rel_path"]),                # shorter names first
+        e["rel_path"],                     # alphabetical tiebreaker
     ))
 
 
