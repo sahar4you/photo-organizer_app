@@ -185,10 +185,13 @@ def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
 
 # ---- Face Detection (OpenCV) ----
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
-    if not HAS_FACE: return [], []
+    if not HAS_FACE or face_cascade is None:
+        return [], []
     try:
         img = cv2.imread(str(filepath))
-        if img is None: return [], []
+        if img is None:
+            log(f"Face: cv2.imread returned None for {filepath}")
+            return [], []
         h, w = img.shape[:2]
         max_dim = 800
         if max(h, w) > max_dim:
@@ -196,10 +199,23 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30,30))
+
+        # Multi-pass face detection: try progressively looser parameters
+        faces = ()
+        for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3)]:
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
+            if len(faces) > 0:
+                break
+
+        # Try profile cascade if frontal found nothing
+        if len(faces) == 0 and profile_cascade is not None:
+            for sf, mn in [(1.1, 5), (1.05, 3)]:
+                faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
+                if len(faces) > 0:
+                    break
+
         if len(faces) == 0:
-            faces = profile_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30,30))
-        if len(faces) == 0: return [], []
+            return [], []
 
         rects, embeddings = [], []
         for (fx,fy,fw,fh) in faces:
@@ -322,11 +338,15 @@ def scan_folder(folder):
         face_cascade = cv2.CascadeClassifier(cascade_path)
         profile_cascade = cv2.CascadeClassifier(profile_path)
         if face_cascade.empty():
-            log(f"Warning: Failed to load frontal cascade from {cascade_path}")
+            log(f"FACE ERROR: Failed to load frontal cascade from {cascade_path}")
             face_cascade = None
+        else:
+            log(f"Face cascade loaded OK from {cascade_path}")
         if profile_cascade is not None and profile_cascade.empty():
-            log(f"Warning: Failed to load profile cascade from {profile_path}")
+            log(f"FACE WARNING: Profile cascade failed from {profile_path}")
             profile_cascade = None
+    else:
+        log("Face detection unavailable: cv2/numpy/sklearn not installed")
 
     for i, (filepath, rel_path) in enumerate(all_media):
         name = filepath.name
@@ -390,6 +410,8 @@ def scan_folder(folder):
             rects, embeddings = detect_faces_cv(str(filepath), face_cascade, profile_cascade)
             face_thumbs = extract_face_thumbs_cv(str(filepath), rects) if rects else []
             face_count = len(rects)
+            if face_count > 0:
+                log(f"Face: {face_count} face(s) in {rel_path}")
             file_idx = len(files)
             for fi, emb in enumerate(embeddings):
                 ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
@@ -433,7 +455,8 @@ def scan_folder(folder):
         if (i + 1) % 10 == 0 or (i + 1) == total_count:
             emit_progress(pct, i + 1, total_count, "scanning")
 
-    log(f"Scanned {len(files)} media files.")
+    total_faces = sum(1 for f in files if f.get("face_count", 0) > 0)
+    log(f"Scanned {len(files)} media files. {total_faces} with faces, {len(all_face_data)} face embeddings.")
 
     # ---- Quality score normalization (second pass) ----
     images = [f for f in files if f["type"] == "image"]
