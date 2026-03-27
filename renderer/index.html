@@ -1687,17 +1687,18 @@ function isCopyFile(relPath) {
 }
 
 function pickSuggestedBest(relPaths) {
-  // Pick best file: originals over copies, highest quality, deeper path preferred
+  // Pick best file: not-copy → oldest → highest quality → shortest name
   let best = null;
   let bestKey = null;
   for (const rel of relPaths) {
     const f = getFileByRel(rel);
     if (!f) continue;
+    const filename = rel.split('/').pop();
     const key = [
-      isCopyFile(rel) ? 1 : 0,          // originals ALWAYS first
+      isCopyFile(rel) ? 1 : 0,           // originals ALWAYS first
+      f.mtime || 0,                       // earliest file = true original
       -(f.quality_score || 0),            // highest quality
-      -(rel.split('/').length),           // DEEPER path first (original folder)
-      rel.length,                         // shortest name
+      filename.length,                    // shortest filename
     ];
     if (!bestKey || compareTuples(key, bestKey) < 0) {
       best = rel;
