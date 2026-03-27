@@ -125,22 +125,14 @@ def compute_sharpness(filepath):
     except Exception:
         return 0.0
 
-def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
+def compute_quality_scores(size_bytes, pixels, sharpness_raw,
                            max_sharpness, max_pixels, max_size):
     """Compute normalized quality sub-scores and final weighted score."""
     # Clamp sharpness to avoid outliers
     clamped = min(sharpness_raw, 1000.0)
     sharpness = min(100, round((clamped / max_sharpness) * 100)) if max_sharpness > 0 else 0
 
-    # Resolution: 0-100
-    pixels = 0
-    if resolution_str and resolution_str != "Unknown":
-        parts = resolution_str.split("x")
-        if len(parts) == 2:
-            try:
-                pixels = int(parts[0]) * int(parts[1])
-            except ValueError:
-                pass
+    # Resolution: 0-100 from actual width*height pixels
     resolution_score = min(100, round((pixels / max_pixels) * 100)) if max_pixels > 0 else 0
 
     # File size: 0-100
@@ -184,6 +176,62 @@ def compute_quality_scores(filepath, size_bytes, resolution_str, sharpness_raw,
     }
 
 # ---- Face Detection (OpenCV) ----
+
+# DNN face detector model paths (bundled with opencv)
+_dnn_net = None
+_dnn_loaded = False
+
+def _get_dnn_detector():
+    """Load OpenCV DNN face detector (res10 SSD) once globally."""
+    global _dnn_net, _dnn_loaded
+    if _dnn_loaded:
+        return _dnn_net
+    _dnn_loaded = True
+    if not HAS_FACE:
+        return None
+    try:
+        model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
+        # Try bundled model first, then opencv's data path
+        prototxt = None
+        caffemodel = None
+        # Check common locations
+        for base in [model_dir, os.path.dirname(cv2.__file__), '.']:
+            p = os.path.join(base, 'deploy.prototxt')
+            c = os.path.join(base, 'res10_300x300_ssd_iter_140000_fp16.caffemodel')
+            if os.path.exists(p) and os.path.exists(c):
+                prototxt, caffemodel = p, c
+                break
+        if prototxt and caffemodel:
+            _dnn_net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
+            log(f"DNN face detector loaded from {prototxt}")
+        else:
+            log("DNN face detector model files not found (optional fallback)")
+    except Exception as e:
+        log(f"DNN face detector failed to load: {e}")
+    return _dnn_net
+
+def _detect_faces_dnn(img):
+    """Detect faces using OpenCV DNN (more accurate than Haar for selfies)."""
+    net = _get_dnn_detector()
+    if net is None:
+        return []
+    h, w = img.shape[:2]
+    blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0,
+                                  (300, 300), (104.0, 177.0, 123.0))
+    net.setInput(blob)
+    detections = net.forward()
+    faces = []
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > 0.5:
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            x1, y1, x2, y2 = box.astype(int)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 > x1 and y2 > y1:
+                faces.append((x1, y1, x2 - x1, y2 - y1))
+    return faces
+
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
     if not HAS_FACE or face_cascade is None:
         return [], []
@@ -200,9 +248,9 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
 
-        # Multi-pass face detection: try progressively looser parameters
+        # Multi-pass Haar cascade detection
         faces = ()
-        for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3)]:
+        for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3), (1.05, 2)]:
             faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
             if len(faces) > 0:
                 break
@@ -213,6 +261,13 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
                 faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
                 if len(faces) > 0:
                     break
+
+        # DNN fallback: much more accurate for selfies, rotated/tilted faces
+        if len(faces) == 0:
+            dnn_faces = _detect_faces_dnn(img)
+            if dnn_faces:
+                faces = dnn_faces
+                log(f"Face: DNN fallback detected {len(faces)} face(s) in {filepath}")
 
         if len(faces) == 0:
             return [], []
@@ -365,39 +420,62 @@ def scan_folder(folder):
         exif = {}
         date_taken = None
         camera = ""
+        camera_make = ""
+        camera_model = ""
         resolution = ""
         img_width, img_height = 0, 0
-        iso, exposure, focal_length = None, None, None
+        iso, exposure, focal_length, aperture = None, None, None, None
+        dpi, bit_depth = None, None
         gps_lat, gps_lon = None, None
 
         if not is_video:
             exif = get_exif_data(str(filepath))
             date_taken = get_date_from_exif(exif)
-            camera = str(exif.get('Make','')).strip()
-            model = str(exif.get('Model','')).strip()
-            if model: camera = f"{camera} {model}".strip()
-            # Extract extended EXIF metadata
-            iso = None
-            exposure = None
-            focal_length = None
+            camera_make = str(exif.get('Make','')).strip()
+            camera_model = str(exif.get('Model','')).strip()
+            camera = f"{camera_make} {camera_model}".strip() if camera_model else camera_make
+            # ISO
             try:
                 iso_val = exif.get('ISOSpeedRatings')
                 if iso_val:
                     iso = int(iso_val) if not isinstance(iso_val, (list, tuple)) else int(iso_val[0])
             except (ValueError, TypeError, IndexError):
                 pass
+            # Exposure time
             try:
                 exp_val = exif.get('ExposureTime')
                 if exp_val:
                     exp_f = float(exp_val)
-                    exposure = f"1/{int(1/exp_f)}" if exp_f > 0 and exp_f < 1 else f"{exp_f}s"
+                    exposure = f"1/{int(round(1/exp_f))}" if 0 < exp_f < 1 else f"{exp_f}s"
             except (ValueError, TypeError, ZeroDivisionError):
                 pass
+            # Focal length
             try:
                 fl_val = exif.get('FocalLength')
                 if fl_val:
-                    focal_length = f"{float(fl_val):.0f}mm"
+                    focal_length = f"{float(fl_val):.1f}mm"
             except (ValueError, TypeError):
+                pass
+            # Aperture (FNumber)
+            try:
+                fn_val = exif.get('FNumber')
+                if fn_val:
+                    aperture = f"f/{float(fn_val):.1f}"
+            except (ValueError, TypeError):
+                pass
+            # DPI
+            try:
+                xres = exif.get('XResolution')
+                if xres:
+                    dpi = int(float(xres))
+            except (ValueError, TypeError):
+                pass
+            # Bit depth (BitsPerSample)
+            try:
+                bps = exif.get('BitsPerSample')
+                if bps:
+                    bit_depth = int(bps) if not isinstance(bps, (list, tuple)) else int(bps[0])
+            except (ValueError, TypeError, IndexError):
                 pass
             w2 = exif.get('ExifImageWidth') or exif.get('ImageWidth', 0)
             h2 = exif.get('ExifImageHeight') or exif.get('ImageLength', 0)
@@ -455,11 +533,16 @@ def scan_folder(folder):
             "month": date_taken.strftime("%Y-%m"),
             "day": date_taken.strftime("%Y-%m-%d"),
             "camera": camera or "Unknown",
+            "camera_make": camera_make or None,
+            "camera_model": camera_model or None,
             "resolution": resolution or "Unknown",
             "width": img_width,
             "height": img_height,
+            "dpi": dpi,
+            "bit_depth": bit_depth,
             "iso": iso if not is_video else None,
             "exposure": exposure if not is_video else None,
+            "aperture": aperture if not is_video else None,
             "focal_length": focal_length if not is_video else None,
             "has_gps": gps_lat is not None,
             "gps_lat": gps_lat,
@@ -489,22 +572,13 @@ def scan_folder(folder):
     images = [f for f in files if f["type"] == "image"]
     if images:
         max_sharpness = min(max((f["sharpness_raw"] for f in images), default=1.0), 1000.0) or 1.0
-        max_pixels = 1
-        for f in images:
-            res = f.get("resolution", "Unknown")
-            if res and res != "Unknown":
-                parts = res.split("x")
-                if len(parts) == 2:
-                    try:
-                        px = int(parts[0]) * int(parts[1])
-                        if px > max_pixels: max_pixels = px
-                    except ValueError:
-                        pass
+        max_pixels = max((f["width"] * f["height"] for f in images if f["width"] > 0 and f["height"] > 0), default=1) or 1
         max_size = max((f["size_bytes"] for f in images), default=1) or 1
 
         for f in images:
+            px = f["width"] * f["height"] if f["width"] > 0 and f["height"] > 0 else 0
             scores = compute_quality_scores(
-                f["path"], f["size_bytes"], f.get("resolution", "Unknown"),
+                f["size_bytes"], px,
                 f["sharpness_raw"], max_sharpness, max_pixels, max_size
             )
             f["quality_score"] = scores["quality_score"]
