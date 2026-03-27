@@ -238,13 +238,15 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
     try:
         img = cv2.imread(str(filepath))
         if img is None:
-            log(f"Face: cv2.imread returned None for {filepath}")
+            log(f"FACE-DEBUG: cv2.imread FAILED for {filepath}")
             return [], []
         h, w = img.shape[:2]
+        log(f"FACE-DEBUG: Processing {filepath} ({w}x{h})")
         max_dim = 800
         if max(h, w) > max_dim:
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
+            log(f"FACE-DEBUG: Resized to {img.shape[1]}x{img.shape[0]}")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
 
@@ -253,6 +255,7 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
         for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3), (1.05, 2)]:
             faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
             if len(faces) > 0:
+                log(f"FACE-DEBUG: Haar frontal found {len(faces)} face(s) with sf={sf},mn={mn}")
                 break
 
         # Try profile cascade if frontal found nothing
@@ -260,18 +263,24 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
             for sf, mn in [(1.1, 5), (1.05, 3)]:
                 faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
                 if len(faces) > 0:
+                    log(f"FACE-DEBUG: Haar profile found {len(faces)} face(s) with sf={sf},mn={mn}")
                     break
 
         # DNN fallback: much more accurate for selfies, rotated/tilted faces
         if len(faces) == 0:
+            log(f"FACE-DEBUG: Haar found 0 faces, trying DNN fallback...")
             dnn_faces = _detect_faces_dnn(img)
             if dnn_faces:
                 faces = dnn_faces
-                log(f"Face: DNN fallback detected {len(faces)} face(s) in {filepath}")
+                log(f"FACE-DEBUG: DNN detected {len(faces)} face(s)")
+            else:
+                log(f"FACE-DEBUG: DNN also found 0 faces")
 
         if len(faces) == 0:
+            log(f"FACE-DEBUG: FINAL RESULT: 0 faces in {filepath}")
             return [], []
 
+        log(f"FACE-DEBUG: FINAL RESULT: {len(faces)} face(s) in {filepath}")
         rects, embeddings = [], []
         for (fx,fy,fw,fh) in faces:
             rects.append((fx,fy,fw,fh))
@@ -387,6 +396,7 @@ def scan_folder(folder):
 
     face_cascade, profile_cascade = None, None
     all_face_data = []
+    log(f"FACE-DEBUG: HAS_FACE={HAS_FACE}, cv2 available={HAS_FACE}")
     if HAS_FACE:
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml'
         profile_path = cv2.data.haarcascades + 'haarcascade_profileface.xml'
@@ -497,6 +507,14 @@ def scan_folder(folder):
                 resolution = f"{img_width}x{img_height}"
             gps_info = exif.get('GPSInfo')
             if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
+
+            # EXIF debug log (first 3 images only to avoid flooding)
+            if i < 3:
+                log(f"EXIF-DEBUG: {rel_path}: camera={camera}, "
+                    f"res={img_width}x{img_height}, iso={iso}, "
+                    f"exposure={exposure}, aperture={aperture}, "
+                    f"focal={focal_length}, dpi={dpi}, "
+                    f"gps={gps_lat},{gps_lon}")
 
         if not date_taken: date_taken = get_date_from_filename(name)
         if not date_taken: date_taken = mod_time
