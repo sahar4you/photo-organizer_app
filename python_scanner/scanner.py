@@ -247,7 +247,12 @@ def compute_quality_scores(size_bytes, pixels, sharpness_raw,
 # DNN face detector (PRIMARY — fewer false positives than Haar)
 _dnn_net = None
 _dnn_loaded = False
-DNN_CONFIDENCE_THRESHOLD = 0.6
+DNN_CONFIDENCE_THRESHOLD = 0.7
+DNN_MIN_FACE_SIZE = 60
+DNN_MIN_FACE_AREA = 4000
+DNN_ASPECT_RATIO_MIN = 0.6
+DNN_ASPECT_RATIO_MAX = 1.4
+DNN_MIN_BLUR_VARIANCE = 50.0
 
 def _get_dnn_detector():
     """Load OpenCV DNN face detector (res10 SSD) once globally.
@@ -311,7 +316,16 @@ def _get_dnn_detector():
     return _dnn_net
 
 def _detect_faces_dnn(img):
-    """Detect faces using OpenCV DNN (primary detector, confidence > 0.6)."""
+    """Detect faces using OpenCV DNN with multi-stage filtering.
+
+    Filters applied after DNN forward pass:
+    1. Confidence threshold (> 0.7)
+    2. Minimum face size (60x60)
+    3. Minimum face area (4000 px)
+    4. Aspect ratio (0.6 - 1.4)
+    5. Blur detection (Laplacian variance > 50)
+    6. Skin tone validation (optional, HSV-based)
+    """
     net = _get_dnn_detector()
     if net is None:
         return []
@@ -320,17 +334,64 @@ def _detect_faces_dnn(img):
                                   (300, 300), (104.0, 177.0, 123.0))
     net.setInput(blob)
     detections = net.forward()
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
     faces = []
     for i in range(detections.shape[2]):
         confidence = float(detections[0, 0, i, 2])
-        if confidence > DNN_CONFIDENCE_THRESHOLD:
-            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-            x1, y1, x2, y2 = box.astype(int)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            if x2 > x1 and y2 > y1:
-                faces.append((x1, y1, x2 - x1, y2 - y1))
-                log_debug(f"DNN face: confidence={confidence:.3f}, box=({x1},{y1},{x2-x1},{y2-y1})")
+
+        # Stage 1: Confidence threshold
+        if confidence <= DNN_CONFIDENCE_THRESHOLD:
+            continue
+
+        box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+        x1, y1, x2, y2 = box.astype(int)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        fw, fh = x2 - x1, y2 - y1
+
+        if fw <= 0 or fh <= 0:
+            continue
+
+        # Stage 2: Minimum face size
+        if fw < DNN_MIN_FACE_SIZE or fh < DNN_MIN_FACE_SIZE:
+            log_debug(f"DNN reject: too small ({fw}x{fh}), conf={confidence:.2f}")
+            continue
+
+        # Stage 3: Minimum face area
+        area = fw * fh
+        if area < DNN_MIN_FACE_AREA:
+            log_debug(f"DNN reject: area too small ({area}px), conf={confidence:.2f}")
+            continue
+
+        # Stage 4: Aspect ratio
+        ratio = fw / fh
+        if ratio < DNN_ASPECT_RATIO_MIN or ratio > DNN_ASPECT_RATIO_MAX:
+            log_debug(f"DNN reject: bad aspect ratio ({ratio:.2f}), conf={confidence:.2f}")
+            continue
+
+        # Stage 5: Blur detection on face ROI
+        face_gray = gray[y1:y2, x1:x2]
+        blur_var = float(cv2.Laplacian(face_gray, cv2.CV_64F).var())
+        if blur_var < DNN_MIN_BLUR_VARIANCE:
+            log_debug(f"DNN reject: blurry (var={blur_var:.1f}), conf={confidence:.2f}")
+            continue
+
+        # Stage 6: Skin tone validation (HSV-based)
+        face_hsv = hsv[y1:y2, x1:x2]
+        # Skin range in HSV: H=0-50, S=40-255, V=60-255
+        skin_mask = cv2.inRange(face_hsv, np.array([0, 40, 60]), np.array([50, 255, 255]))
+        skin_ratio = float(np.count_nonzero(skin_mask)) / area
+        if skin_ratio < 0.15:
+            log_debug(f"DNN reject: low skin ratio ({skin_ratio:.2f}), conf={confidence:.2f}")
+            continue
+
+        faces.append((x1, y1, fw, fh))
+        log_debug(f"DNN accept: conf={confidence:.3f}, size={fw}x{fh}, "
+                  f"blur={blur_var:.0f}, skin={skin_ratio:.2f}")
+
     return faces
 
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
