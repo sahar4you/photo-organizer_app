@@ -2,9 +2,102 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 
 let mainWindow;
+let pythonDepsReady = false;
+let pythonAvailable = false;
+
+// ---- Python environment bootstrap ----
+
+function getPythonCmd() {
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+function checkPythonAvailable() {
+  const cmds = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const cmd of cmds) {
+    try {
+      const result = execSync(`${cmd} --version`, { timeout: 10000, stdio: 'pipe' });
+      const version = result.toString().trim();
+      console.log(`[SETUP] Found ${version} (${cmd})`);
+      // Check minimum version 3.10
+      const match = version.match(/Python (\d+)\.(\d+)/);
+      if (match) {
+        const major = parseInt(match[1]);
+        const minor = parseInt(match[2]);
+        if (major >= 3 && minor >= 10) {
+          return cmd;
+        }
+        console.warn(`[SETUP] Python ${major}.${minor} found but 3.10+ is required`);
+      }
+      return cmd; // fallback: use whatever is available
+    } catch (_) {
+      continue;
+    }
+  }
+  return null;
+}
+
+function ensurePythonDeps() {
+  return new Promise((resolve) => {
+    const pythonCmd = checkPythonAvailable();
+    if (!pythonCmd) {
+      console.error('[SETUP] Python 3.10+ is required. Please install Python.');
+      console.error('[SETUP] Face detection and duplicate detection will be DISABLED.');
+      pythonAvailable = false;
+      pythonDepsReady = false;
+      resolve(false);
+      return;
+    }
+
+    pythonAvailable = true;
+    const setupScript = path.join(__dirname, 'python', 'setup_env.py');
+
+    if (!fs.existsSync(setupScript)) {
+      console.error(`[SETUP] Setup script not found: ${setupScript}`);
+      pythonDepsReady = false;
+      resolve(false);
+      return;
+    }
+
+    const proc = spawn(pythonCmd, [setupScript], {
+      cwd: path.join(__dirname, 'python'),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    proc.stdout.on('data', (data) => {
+      data.toString().split('\n').forEach(line => {
+        if (line.trim()) console.log(line.trim());
+      });
+    });
+
+    proc.stderr.on('data', (data) => {
+      data.toString().split('\n').forEach(line => {
+        if (line.trim()) console.error('[SETUP-ERR]', line.trim());
+      });
+    });
+
+    proc.on('error', (err) => {
+      console.error('[SETUP] Failed to run setup script:', err.message);
+      pythonDepsReady = false;
+      resolve(false);
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log('[SETUP] Python dependencies verified successfully');
+        pythonDepsReady = true;
+        resolve(true);
+      } else {
+        console.error(`[SETUP] Setup script exited with code ${code}`);
+        console.error('[SETUP] Some features may be unavailable. Face detection and duplicate detection may be DISABLED.');
+        pythonDepsReady = false;
+        resolve(false);
+      }
+    });
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -25,7 +118,14 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  // Bootstrap Python dependencies before creating the window
+  if (isDev()) {
+    console.log('[SETUP] Checking Python dependencies...');
+    await ensurePythonDeps();
+  }
+  createWindow();
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
@@ -41,7 +141,7 @@ function getScannerCommand(folderPath, extraArgs) {
   if (isDev()) {
     // Dev mode: use system Python + script
     const scriptPath = path.join(__dirname, 'python_scanner', 'scanner.py');
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pythonCmd = getPythonCmd();
     return { cmd: pythonCmd, args: [scriptPath, ...args], cwd: path.join(__dirname, 'python_scanner') };
   }
 
@@ -59,7 +159,13 @@ function getScannerCommand(folderPath, extraArgs) {
   return { cmd: exePath, args, cwd: path.dirname(exePath) };
 }
 
-function spawnScanner(folderPath, extraArgs) {
+async function spawnScanner(folderPath, extraArgs) {
+  // Runtime fallback: ensure Python deps are installed before scanning
+  if (isDev() && !pythonDepsReady) {
+    console.log('[SETUP] Runtime fallback — re-checking Python dependencies...');
+    await ensurePythonDeps();
+  }
+
   return new Promise((resolve, reject) => {
     let scannerInfo;
     try {
@@ -142,6 +248,16 @@ function spawnScanner(folderPath, extraArgs) {
 
 // ---- IPC Handlers ----
 
+// Check Python dependency status
+ipcMain.handle('get-python-status', async () => {
+  return {
+    pythonAvailable,
+    pythonDepsReady,
+    faceDetection: pythonDepsReady,
+    duplicateDetection: pythonDepsReady,
+  };
+});
+
 // Pick folder
 ipcMain.handle('pick-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -164,7 +280,6 @@ function hideCacheFolder(folderPath) {
   const cacheDir = path.join(folderPath, '.cache');
   if (fs.existsSync(cacheDir)) {
     try {
-      const { execSync } = require('child_process');
       execSync(`attrib +h "${cacheDir}"`, { stdio: 'ignore' });
     } catch (_) {}
   }

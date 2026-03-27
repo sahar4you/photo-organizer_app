@@ -4,6 +4,7 @@
   "description": "Google Photos-style offline photo organizer with face detection",
   "main": "main.js",
   "scripts": {
+    "postinstall": "python python/setup_env.py || python3 python/setup_env.py || echo [WARN] Python dependency setup skipped - Python not found",
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
