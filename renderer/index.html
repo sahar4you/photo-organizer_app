@@ -1649,26 +1649,33 @@ function isCopyFile(relPath) {
 }
 
 function pickSuggestedBest(relPaths) {
-  // Use quality_score, prefer non-copy files, shorter names
+  // Pick best file: highest quality, prefer originals over copies, shorter paths
+  // COPY files are NEVER selected as BEST if any non-copy exists
   let best = null;
-  let bestKey = [999, 1, 0, 999];
+  let bestKey = null;
   for (const rel of relPaths) {
     const f = getFileByRel(rel);
     if (!f) continue;
     const key = [
-      -(f.quality_score || 0),
-      isCopyFile(rel) ? 1 : 0,
-      rel.split('/').length,
-      rel.length,
+      isCopyFile(rel) ? 1 : 0,         // originals first (CRITICAL)
+      -(f.quality_score || 0),           // highest quality
+      rel.split('/').length,             // shallowest path
+      rel.length,                        // shortest name
     ];
-    const isBetter = key.some((v, i) => {
-      if (v < bestKey[i]) return true;
-      if (v > bestKey[i]) return false;
-      return false;
-    }) || key.every((v, i) => v <= bestKey[i]);
-    if (isBetter) { best = rel; bestKey = key; }
+    if (!bestKey || compareTuples(key, bestKey) < 0) {
+      best = rel;
+      bestKey = key;
+    }
   }
   return best;
+}
+
+function compareTuples(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
 }
 
 function renderDuplicates() {
