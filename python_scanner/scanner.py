@@ -244,9 +244,10 @@ def compute_quality_scores(size_bytes, pixels, sharpness_raw,
 
 # ---- Face Detection (OpenCV) ----
 
-# DNN face detector model paths (bundled with opencv)
+# DNN face detector (PRIMARY — fewer false positives than Haar)
 _dnn_net = None
 _dnn_loaded = False
+DNN_CONFIDENCE_THRESHOLD = 0.6
 
 def _get_dnn_detector():
     """Load OpenCV DNN face detector (res10 SSD) once globally."""
@@ -258,27 +259,36 @@ def _get_dnn_detector():
         return None
     try:
         model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
-        # Try bundled model first, then opencv's data path
         prototxt = None
         caffemodel = None
-        # Check common locations
+        # Search for model files: bundled dir, opencv data dir, cwd
+        model_names = [
+            'res10_300x300_ssd_iter_140000.caffemodel',
+            'res10_300x300_ssd_iter_140000_fp16.caffemodel',
+        ]
         for base in [model_dir, os.path.dirname(cv2.__file__), '.']:
             p = os.path.join(base, 'deploy.prototxt')
-            c = os.path.join(base, 'res10_300x300_ssd_iter_140000_fp16.caffemodel')
-            if os.path.exists(p) and os.path.exists(c):
-                prototxt, caffemodel = p, c
+            if not os.path.exists(p):
+                continue
+            for mname in model_names:
+                c = os.path.join(base, mname)
+                if os.path.exists(c):
+                    prototxt, caffemodel = p, c
+                    break
+            if prototxt:
                 break
         if prototxt and caffemodel:
             _dnn_net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
-            log_debug(f"DNN face detector loaded from {prototxt}")
+            log_info("DNN face detector loaded (primary)")
+            log_debug(f"DNN model: {caffemodel}")
         else:
-            log_debug("DNN face detector model files not found (optional fallback)")
+            log_info("DNN model files not found, will use Haar cascade only")
     except Exception as e:
         log_error(f"DNN face detector failed to load: {e}")
     return _dnn_net
 
 def _detect_faces_dnn(img):
-    """Detect faces using OpenCV DNN (more accurate than Haar for selfies)."""
+    """Detect faces using OpenCV DNN (primary detector, confidence > 0.6)."""
     net = _get_dnn_detector()
     if net is None:
         return []
@@ -289,18 +299,19 @@ def _detect_faces_dnn(img):
     detections = net.forward()
     faces = []
     for i in range(detections.shape[2]):
-        confidence = detections[0, 0, i, 2]
-        if confidence > 0.5:
+        confidence = float(detections[0, 0, i, 2])
+        if confidence > DNN_CONFIDENCE_THRESHOLD:
             box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
             x1, y1, x2, y2 = box.astype(int)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
             if x2 > x1 and y2 > y1:
                 faces.append((x1, y1, x2 - x1, y2 - y1))
+                log_debug(f"DNN face: confidence={confidence:.3f}, box=({x1},{y1},{x2-x1},{y2-y1})")
     return faces
 
 def detect_faces_cv(filepath, face_cascade, profile_cascade):
-    if not HAS_FACE or face_cascade is None:
+    if not HAS_FACE:
         return [], []
     try:
         img = cv2.imread(str(filepath))
@@ -315,34 +326,31 @@ def detect_faces_cv(filepath, face_cascade, profile_cascade):
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
             log_debug(f"Resized for face detection: {img.shape[1]}x{img.shape[0]} (original: {original_w}x{original_h})")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)
 
-        # Multi-pass Haar cascade detection
-        faces = ()
-        for sf, mn in [(1.1, 5), (1.05, 3), (1.15, 3), (1.05, 2)]:
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
-            if len(faces) > 0:
-                log_debug(f"Haar frontal found {len(faces)} face(s) with sf={sf},mn={mn}")
-                break
+        # PRIMARY: DNN face detector (fewer false positives, confidence-gated)
+        faces = _detect_faces_dnn(img)
+        if faces:
+            log_debug(f"DNN detected {len(faces)} face(s)")
+        else:
+            # FALLBACK: Haar cascade (only if DNN found nothing or model missing)
+            log_debug("DNN found 0 faces, trying Haar fallback...")
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
 
-        # Try profile cascade if frontal found nothing
-        if len(faces) == 0 and profile_cascade is not None:
-            for sf, mn in [(1.1, 5), (1.05, 3)]:
-                faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
-                if len(faces) > 0:
-                    log_debug(f"Haar profile found {len(faces)} face(s) with sf={sf},mn={mn}")
-                    break
+            if face_cascade is not None:
+                for sf, mn in [(1.1, 5), (1.05, 3)]:
+                    faces = face_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
+                    if len(faces) > 0:
+                        log_debug(f"Haar frontal found {len(faces)} face(s) with sf={sf},mn={mn}")
+                        break
 
-        # DNN fallback: much more accurate for selfies, rotated/tilted faces
-        if len(faces) == 0:
-            log_debug(f"Haar found 0 faces, trying DNN fallback...")
-            dnn_faces = _detect_faces_dnn(img)
-            if dnn_faces:
-                faces = dnn_faces
-                log_debug(f"DNN detected {len(faces)} face(s)")
-            else:
-                log_debug(f"DNN also found 0 faces")
+            # Try profile cascade if frontal found nothing
+            if len(faces) == 0 and profile_cascade is not None:
+                for sf, mn in [(1.1, 5), (1.05, 3)]:
+                    faces = profile_cascade.detectMultiScale(gray, scaleFactor=sf, minNeighbors=mn, minSize=(30, 30))
+                    if len(faces) > 0:
+                        log_debug(f"Haar profile found {len(faces)} face(s) with sf={sf},mn={mn}")
+                        break
 
         if len(faces) == 0:
             log_debug(f"No faces in {filepath}")
@@ -465,22 +473,32 @@ def scan_folder(folder):
         log_info(f"Large library ({total_count} files), scanning may take a while")
 
     face_cascade, profile_cascade = None, None
+    face_detection_enabled = False
     all_face_data = []
     log_debug(f"HAS_FACE={HAS_FACE}, cv2 available={HAS_FACE}")
     if HAS_FACE:
+        # Try to load DNN detector (primary)
+        dnn_net = _get_dnn_detector()
+        # Load Haar cascades (fallback)
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml'
         profile_path = cv2.data.haarcascades + 'haarcascade_profileface.xml'
         face_cascade = cv2.CascadeClassifier(cascade_path)
         profile_cascade = cv2.CascadeClassifier(profile_path)
         if face_cascade.empty():
-            log_error(f"Failed to load frontal cascade from {cascade_path}")
+            log_debug(f"Haar frontal cascade not loaded from {cascade_path}")
             face_cascade = None
-        else:
-            log_info("Face detection enabled")
-            log_debug(f"Face cascade loaded from {cascade_path}")
         if profile_cascade is not None and profile_cascade.empty():
-            log_debug(f"Profile cascade failed from {profile_path}")
+            log_debug(f"Haar profile cascade not loaded from {profile_path}")
             profile_cascade = None
+        # Enable face detection if DNN or Haar is available
+        if dnn_net is not None:
+            face_detection_enabled = True
+            log_info("Face detection enabled (DNN primary, Haar fallback)")
+        elif face_cascade is not None:
+            face_detection_enabled = True
+            log_info("Face detection enabled (Haar only, DNN model not found)")
+        else:
+            log_error("Face detection disabled: no DNN model and no Haar cascade")
     else:
         log_info("Face detection unavailable (cv2/numpy/sklearn not installed)")
 
@@ -608,7 +626,7 @@ def scan_folder(folder):
             sharpness_raw = min(compute_sharpness(str(filepath)), 1000.0)
 
         face_count = 0
-        if not is_video and face_cascade is not None:
+        if not is_video and face_detection_enabled:
             rects, embeddings = detect_faces_cv(str(filepath), face_cascade, profile_cascade)
             face_thumbs = extract_face_thumbs_cv(str(filepath), rects) if rects else []
             face_count = len(rects)
@@ -705,7 +723,7 @@ def scan_folder(folder):
             pass
 
     person_thumbs = {}
-    if face_cascade and all_face_data:
+    if face_detection_enabled and all_face_data:
         emit_progress(100, total_count, total_count, "clustering faces")
         log_info("Clustering faces...")
         file_faces, person_thumbs = cluster_faces(all_face_data)
