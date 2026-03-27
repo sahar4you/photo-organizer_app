@@ -1230,6 +1230,8 @@ async function saveFaceNames() {
 
   closeFaceManager();
   refreshFaceUI();
+  updateFacesBadge();
+  if (activeTab === 'faces') renderFacesPanel();
   applyFilters();
 }
 
@@ -1637,18 +1639,34 @@ function similarityColor(pct) {
   return '#ef5350';
 }
 
+function isCopyFile(relPath) {
+  const name = relPath.split('/').pop().split('\\').pop().toLowerCase();
+  const stem = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name;
+  if (stem.includes('copy') || stem.includes('kopie')) return true;
+  if (/\(\d+\)$/.test(stem.trim())) return true;
+  if (/ - \d+$/.test(stem.trim())) return true;
+  return false;
+}
+
 function pickSuggestedBest(relPaths) {
-  // Use Python-computed quality_score (sharpness + resolution + size)
+  // Use quality_score, prefer non-copy files, shorter names
   let best = null;
-  let bestScore = -1;
+  let bestKey = [999, 1, 0, 999];
   for (const rel of relPaths) {
     const f = getFileByRel(rel);
     if (!f) continue;
-    const score = f.quality_score || 0;
-    if (score > bestScore) {
-      bestScore = score;
-      best = rel;
-    }
+    const key = [
+      -(f.quality_score || 0),
+      isCopyFile(rel) ? 1 : 0,
+      rel.split('/').length,
+      rel.length,
+    ];
+    const isBetter = key.some((v, i) => {
+      if (v < bestKey[i]) return true;
+      if (v > bestKey[i]) return false;
+      return false;
+    }) || key.every((v, i) => v <= bestKey[i]);
+    if (isBetter) { best = rel; bestKey = key; }
   }
   return best;
 }
@@ -1811,6 +1829,10 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
     keeperHtml = `<button class="set-keeper-btn" onclick="setKeeper('${groupKey}','${relPath}')">Set as keeper</button>`;
   }
 
+  // Copy badge
+  const copyHtml = isCopyFile(relPath)
+    ? '<span style="background:var(--danger);color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;flex-shrink:0;">COPY</span>' : '';
+
   return `<div class="${rowClass}">
     <input type="checkbox" ${isKeeper ? 'disabled' : ''} ${checked}
       onchange="toggleDupSelect('${relPath}', this.checked)">
@@ -1821,6 +1843,7 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
     </div>
     ${simHtml}
     ${qHtml}
+    ${copyHtml}
     ${suggestedHtml}
     ${keeperHtml}
   </div>`;
