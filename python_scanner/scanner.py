@@ -247,12 +247,15 @@ def compute_quality_scores(size_bytes, pixels, sharpness_raw,
 # DNN face detector (PRIMARY — fewer false positives than Haar)
 _dnn_net = None
 _dnn_loaded = False
+_eye_cascade = None
+_eye_cascade_loaded = False
 DNN_CONFIDENCE_THRESHOLD = 0.7
-DNN_MIN_FACE_SIZE = 60
-DNN_MIN_FACE_AREA = 4000
+DNN_MIN_FACE_SIZE = 80
+DNN_MIN_FACE_AREA_RATIO = 0.02
 DNN_ASPECT_RATIO_MIN = 0.6
 DNN_ASPECT_RATIO_MAX = 1.4
-DNN_MIN_BLUR_VARIANCE = 50.0
+DNN_MIN_BLUR_VARIANCE = 80.0
+DNN_EDGE_MARGIN = 5
 
 def _get_dnn_detector():
     """Load OpenCV DNN face detector (res10 SSD) once globally.
@@ -315,28 +318,50 @@ def _get_dnn_detector():
         log_error(f"DNN face detector failed to load: {e}")
     return _dnn_net
 
+def _get_eye_cascade():
+    """Load Haar eye cascade once globally for eye validation."""
+    global _eye_cascade, _eye_cascade_loaded
+    if _eye_cascade_loaded:
+        return _eye_cascade
+    _eye_cascade_loaded = True
+    if not HAS_FACE:
+        return None
+    try:
+        eye_path = cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml'
+        _eye_cascade = cv2.CascadeClassifier(eye_path)
+        if _eye_cascade.empty():
+            log_debug("Eye cascade not loaded, eye validation disabled")
+            _eye_cascade = None
+        else:
+            log_debug("Eye cascade loaded for face validation")
+    except Exception:
+        _eye_cascade = None
+    return _eye_cascade
+
 def _detect_faces_dnn(img):
-    """Detect faces using OpenCV DNN with multi-stage filtering.
+    """Detect faces using OpenCV DNN with multi-stage quality filtering.
 
     Filters applied after DNN forward pass:
     1. Confidence threshold (> 0.7)
-    2. Minimum face size (60x60)
-    3. Minimum face area (4000 px)
+    2. Minimum face size (80x80)
+    3. Face area ratio (> 2% of image)
     4. Aspect ratio (0.6 - 1.4)
-    5. Blur detection (Laplacian variance > 50)
-    6. Skin tone validation (optional, HSV-based)
+    5. Edge rejection (face touching image border)
+    6. Blur detection (Laplacian variance > 80)
+    7. Eye validation (at least 1 eye detected inside face ROI)
     """
     net = _get_dnn_detector()
     if net is None:
         return []
-    h, w = img.shape[:2]
+    img_h, img_w = img.shape[:2]
+    img_area = img_h * img_w
     blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0,
                                   (300, 300), (104.0, 177.0, 123.0))
     net.setInput(blob)
     detections = net.forward()
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    eye_cascade = _get_eye_cascade()
 
     faces = []
     for i in range(detections.shape[2]):
@@ -346,10 +371,10 @@ def _detect_faces_dnn(img):
         if confidence <= DNN_CONFIDENCE_THRESHOLD:
             continue
 
-        box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+        box = detections[0, 0, i, 3:7] * np.array([img_w, img_h, img_w, img_h])
         x1, y1, x2, y2 = box.astype(int)
         x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
+        x2, y2 = min(img_w, x2), min(img_h, y2)
         fw, fh = x2 - x1, y2 - y1
 
         if fw <= 0 or fh <= 0:
@@ -360,10 +385,11 @@ def _detect_faces_dnn(img):
             log_debug(f"DNN reject: too small ({fw}x{fh}), conf={confidence:.2f}")
             continue
 
-        # Stage 3: Minimum face area
-        area = fw * fh
-        if area < DNN_MIN_FACE_AREA:
-            log_debug(f"DNN reject: area too small ({area}px), conf={confidence:.2f}")
+        # Stage 3: Face area ratio relative to image
+        face_area = fw * fh
+        area_ratio = face_area / img_area
+        if area_ratio < DNN_MIN_FACE_AREA_RATIO:
+            log_debug(f"DNN reject: area ratio too small ({area_ratio:.4f}), conf={confidence:.2f}")
             continue
 
         # Stage 4: Aspect ratio
@@ -372,25 +398,34 @@ def _detect_faces_dnn(img):
             log_debug(f"DNN reject: bad aspect ratio ({ratio:.2f}), conf={confidence:.2f}")
             continue
 
-        # Stage 5: Blur detection on face ROI
+        # Stage 5: Edge rejection — face touching image border
+        if (x1 <= DNN_EDGE_MARGIN or y1 <= DNN_EDGE_MARGIN or
+                x2 >= img_w - DNN_EDGE_MARGIN or y2 >= img_h - DNN_EDGE_MARGIN):
+            log_debug(f"DNN reject: touches border ({x1},{y1},{x2},{y2}), conf={confidence:.2f}")
+            continue
+
+        # Stage 6: Blur detection on face ROI
         face_gray = gray[y1:y2, x1:x2]
         blur_var = float(cv2.Laplacian(face_gray, cv2.CV_64F).var())
         if blur_var < DNN_MIN_BLUR_VARIANCE:
             log_debug(f"DNN reject: blurry (var={blur_var:.1f}), conf={confidence:.2f}")
             continue
 
-        # Stage 6: Skin tone validation (HSV-based)
-        face_hsv = hsv[y1:y2, x1:x2]
-        # Skin range in HSV: H=0-50, S=40-255, V=60-255
-        skin_mask = cv2.inRange(face_hsv, np.array([0, 40, 60]), np.array([50, 255, 255]))
-        skin_ratio = float(np.count_nonzero(skin_mask)) / area
-        if skin_ratio < 0.15:
-            log_debug(f"DNN reject: low skin ratio ({skin_ratio:.2f}), conf={confidence:.2f}")
-            continue
+        # Stage 7: Eye validation — reject back-of-head / non-frontal faces
+        if eye_cascade is not None:
+            # Search for eyes in the upper 60% of the face ROI
+            eye_region_h = int(fh * 0.6)
+            eye_roi = face_gray[:eye_region_h, :]
+            eyes = eye_cascade.detectMultiScale(eye_roi, scaleFactor=1.1,
+                                                 minNeighbors=3, minSize=(15, 15))
+            if len(eyes) == 0:
+                log_debug(f"DNN reject: no eyes detected (back/non-frontal face), conf={confidence:.2f}")
+                continue
+            log_debug(f"DNN eye check: {len(eyes)} eye(s) found")
 
         faces.append((x1, y1, fw, fh))
         log_debug(f"DNN accept: conf={confidence:.3f}, size={fw}x{fh}, "
-                  f"blur={blur_var:.0f}, skin={skin_ratio:.2f}")
+                  f"ratio={area_ratio:.3f}, blur={blur_var:.0f}, eyes={'Y' if eye_cascade else '?'}")
 
     return faces
 
