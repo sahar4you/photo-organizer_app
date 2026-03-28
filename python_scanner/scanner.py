@@ -26,12 +26,6 @@ try:
 except ImportError:
     HAS_FACE = False
 
-try:
-    import face_recognition as _face_rec
-    HAS_FACE_REC = True
-except ImportError:
-    HAS_FACE_REC = False
-
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif', '.heic'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.3gp'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
@@ -357,7 +351,7 @@ def _detect_faces_dnn(img):
     5. Edge rejection (face touching image border)
     6. Blur detection (Laplacian variance > 80)
     7. Eye validation (exactly 2 eyes in upper 50% of face ROI)
-    8. Human face verification via face_recognition (rejects animals/objects)
+    8. Eye geometry validation (inter-eye distance + symmetry)
     9. Max faces cap (keep largest 5 if too many detections)
     """
     net = _get_dnn_detector()
@@ -437,19 +431,35 @@ def _detect_faces_dnn(img):
                 log_debug(f"DNN reject: expected 2 eyes, found {eye_count}, conf={confidence:.2f}")
                 continue
 
-        # Stage 8: Human face verification via face_recognition library
-        if HAS_FACE_REC:
-            face_roi_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
-            # face_recognition expects full image + face location in (top, right, bottom, left) format
-            # Passing the cropped ROI and checking if any encoding is found
-            try:
-                encodings = _face_rec.face_encodings(face_roi_rgb, known_face_locations=[(0, fw, fh, 0)])
-                if not encodings:
-                    log_debug(f"DNN reject: face_recognition found no human face encoding, conf={confidence:.2f}")
-                    continue
-            except Exception:
-                # If face_recognition fails on this ROI, skip verification (allow through)
-                pass
+        # Stage 8: Eye geometry validation (inter-eye distance + symmetry)
+        if eye_cascade is not None and eye_count == 2:
+            # Sort eyes left-to-right by x coordinate
+            sorted_eyes = sorted(eyes, key=lambda e: e[0])
+            (ex1, ey1, ew1, eh1) = sorted_eyes[0]
+            (ex2, ey2, ew2, eh2) = sorted_eyes[1]
+            # Eye centers
+            cx1, cy1 = ex1 + ew1 // 2, ey1 + eh1 // 2
+            cx2, cy2 = ex2 + ew2 // 2, ey2 + eh2 // 2
+            eye_dist = ((cx2 - cx1) ** 2 + (cy2 - cy1) ** 2) ** 0.5
+
+            # Reject if eyes too close together (< 20% of face width — likely false detection)
+            min_eye_dist = fw * 0.20
+            if eye_dist < min_eye_dist:
+                log_debug(f"DNN reject: eyes too close ({eye_dist:.0f}px < {min_eye_dist:.0f}px), conf={confidence:.2f}")
+                continue
+
+            # Reject if eyes too far apart (> 70% of face width — likely misdetected eye pair)
+            max_eye_dist = fw * 0.70
+            if eye_dist > max_eye_dist:
+                log_debug(f"DNN reject: eyes too far ({eye_dist:.0f}px > {max_eye_dist:.0f}px), conf={confidence:.2f}")
+                continue
+
+            # Reject if eyes are not roughly horizontally aligned (vertical offset > 30% of face height)
+            eye_y_diff = abs(cy2 - cy1)
+            max_y_diff = fh * 0.30
+            if eye_y_diff > max_y_diff:
+                log_debug(f"DNN reject: eyes not aligned (y-diff={eye_y_diff:.0f}px > {max_y_diff:.0f}px), conf={confidence:.2f}")
+                continue
 
         faces.append((x1, y1, fw, fh))
         log_debug(f"DNN accept: conf={confidence:.3f}, size={fw}x{fh}, "

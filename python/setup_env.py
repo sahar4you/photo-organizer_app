@@ -6,8 +6,7 @@ packages = [
     ("numpy", "numpy"),
     ("scikit-learn", "sklearn"),
     ("pillow", "PIL"),
-    ("imagehash", "imagehash"),
-    ("face_recognition", "face_recognition")
+    ("imagehash", "imagehash")
 ]
 
 def install(package):
