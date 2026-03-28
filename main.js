@@ -21,7 +21,8 @@ function checkPythonAvailable() {
     try {
       const result = execSync(`${cmd} --version`, { timeout: 10000, stdio: 'pipe' });
       const version = result.toString().trim();
-      console.log(`[SETUP] Found ${version} (${cmd})`);
+      // Note: devLog not available yet (before app.whenReady), use conditional
+      if (!app.isPackaged) console.log(`[SETUP] Found ${version} (${cmd})`);
       // Check minimum version 3.10
       const match = version.match(/Python (\d+)\.(\d+)/);
       if (match) {
@@ -69,7 +70,7 @@ function ensurePythonDeps() {
 
     proc.stdout.on('data', (data) => {
       data.toString().split('\n').forEach(line => {
-        if (line.trim()) console.log(line.trim());
+        if (line.trim() && !app.isPackaged) console.log(line.trim());
       });
     });
 
