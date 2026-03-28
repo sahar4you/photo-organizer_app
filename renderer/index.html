@@ -109,6 +109,8 @@
   .tab-progress .tp-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s; width:0%; }
   .tab-progress .tp-text { font-size:12px; color:var(--text2); white-space:nowrap; }
   .tab-progress .tp-spinner { width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; flex-shrink:0; }
+  .tp-stop-btn { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer; flex-shrink:0; }
+  .tp-stop-btn:hover { background:var(--danger); color:#fff; }
 
   /* Badge spinner (in tab bar) */
   .badge-spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-left:4px; vertical-align:middle; }
@@ -347,8 +349,13 @@
         </select>
       </div>
       <div class="filter-group">
-        <label>👤 Person / Face</label>
-        <select id="filterFace"><option value="">All People</option><option value="__has_face__">Has Faces</option><option value="__no_face__">No Faces</option></select>
+        <label>👤 Faces</label>
+        <select id="filterFace">
+          <option value="">All Photos</option>
+          <option value="__kept_faces__">★ Kept Faces</option>
+          <option value="__has_face__">Has Faces</option>
+          <option value="__no_face__">No Faces</option>
+        </select>
       </div>
       <div class="face-avatars" id="faceAvatars"></div>
       <button class="manage-btn" onclick="openFaceManager()">✏️ Rename / Merge Faces</button>
@@ -445,10 +452,10 @@
     </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
     <div class="dup-panel" id="dupPanel">
-      <div class="tab-progress" id="dupProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="dupProgressFill"></div></div><div class="tp-text" id="dupProgressText">Detecting duplicates...</div></div>
+      <div class="tab-progress" id="dupProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="dupProgressFill"></div></div><div class="tp-text" id="dupProgressText">Detecting duplicates...</div><button class="tp-stop-btn" onclick="stopBackgroundScan()">Stop</button></div>
     </div>
     <div class="faces-panel" id="facesPanel">
-      <div class="tab-progress" id="facesProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="facesProgressFill"></div></div><div class="tp-text" id="facesProgressText">Processing faces...</div></div>
+      <div class="tab-progress" id="facesProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="facesProgressFill"></div></div><div class="tp-text" id="facesProgressText">Processing faces...</div><button class="tp-stop-btn" onclick="stopBackgroundScan()">Stop</button></div>
     </div>
   </main>
 </div>
@@ -676,6 +683,16 @@ function hideTabProgress(tab) {
   if (el) el.classList.remove('active');
 }
 
+async function stopBackgroundScan() {
+  try {
+    await window.api.stopScan();
+    scanInProgress = false;
+    hideTabProgress('faces');
+    hideTabProgress('duplicates');
+    showMsg('Scan stopped', 'Background processing has been cancelled. Gallery data may be incomplete.');
+  } catch (_) {}
+}
+
 // ---- Folder History ----
 function getFolderHistory() {
   try { return JSON.parse(localStorage.getItem('folderHistory') || '[]'); }
@@ -825,6 +842,9 @@ async function scanCurrentFolder() {
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
 
+    // Memory optimization: strip inline base64 thumbs (lazy loading handles display)
+    DATA.forEach(f => { f.thumb = ''; });
+
     // Re-apply tags
     DATA.forEach(f => { if (f.rel_path && TAGS_MAP[f.rel_path]) f.tags = TAGS_MAP[f.rel_path]; });
 
@@ -861,7 +881,7 @@ function populateFilters() {
 function fillSelect(id, values) {
   const sel = document.getElementById(id);
   // Keep first options (All Dates, etc.)
-  const keepCount = id === 'filterFace' ? 3 : 1;
+  const keepCount = id === 'filterFace' ? 4 : 1;
   while (sel.options.length > keepCount) sel.remove(keepCount);
   values.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
 }
@@ -916,9 +936,12 @@ function applyFilters() {
       if (res === 'fhd' && mp < 2) return false;
       if (res === '4k' && mp < 8) return false;
     }
-    if (face === '__has_face__' && (!f.faces || f.faces.length === 0)) return false;
-    if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
-    if (face && face !== '__has_face__' && face !== '__no_face__' && (!f.faces || !f.faces.includes(face))) return false;
+    if (face === '__kept_faces__') {
+      if (!f.faces || f.faces.length === 0) return false;
+      if (!f.faces.some(p => KEPT_FACES.has(p))) return false;
+    } else if (face === '__has_face__' && (!f.faces || f.faces.length === 0)) return false;
+    else if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
+    else if (face && face !== '__has_face__' && face !== '__no_face__' && face !== '__kept_faces__' && (!f.faces || !f.faces.includes(face))) return false;
     if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
     if (tag === '__no_tag__' && f.tags && f.tags.length > 0) return false;
     if (tag && tag !== '__has_tag__' && tag !== '__no_tag__' && (!f.tags || !f.tags.includes(tag))) return false;
@@ -1147,12 +1170,12 @@ function render() {
   initLazyThumbs();
 }
 
-// Dynamic thumbnail size based on grid mode
+// Dynamic thumbnail size based on grid mode — higher quality for larger views
 function getThumbSize() {
   if (viewMode === 'list') return 150;
   if (gridSize === 'small') return 150;
-  if (gridSize === 'large') return 300;
-  return 200;
+  if (gridSize === 'large') return 400;
+  return 250;
 }
 
 // On-demand lazy thumbnail generation via IntersectionObserver + client queue
@@ -1217,10 +1240,14 @@ async function openLightbox(idx) {
   if (f.type === 'video') {
     media.innerHTML = `<video src="file://${f.path}" controls autoplay style="max-width:100%;max-height:80vh;border-radius:8px;"></video>`;
   } else {
+    // Show spinner while loading full-quality original
+    media.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:300px;"><div class="spinner" style="width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;"></div></div>';
     const dataUrl = await window.api.readImage(f.path);
-    media.innerHTML = dataUrl
-      ? `<img src="${dataUrl}">`
-      : `<div style="color:var(--text2);padding:40px;">Could not load image</div>`;
+    if (dataUrl) {
+      media.innerHTML = `<img src="${dataUrl}" style="max-width:100%;max-height:85vh;">`;
+    } else {
+      media.innerHTML = `<div style="color:var(--text2);padding:40px;">Could not load image</div>`;
+    }
   }
 
   document.getElementById('lbName').textContent = f.name;

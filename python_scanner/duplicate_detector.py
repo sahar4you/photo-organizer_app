@@ -43,6 +43,9 @@ DUPLICATES_DIR = "__duplicates__"
 # Read buffer size for MD5 hashing
 CHUNK_SIZE = 65536  # 64KB
 
+# Cache format version — bump to force reprocessing
+CACHE_FORMAT_VERSION = 2
+
 
 # ---------------------------------------------------------------------------
 # Cache management
@@ -71,11 +74,13 @@ def load_hash_cache(folder):
         try:
             with open(cache_path, "r") as f:
                 data = json.load(f)
-            if data.get("version") == 1:
+            if data.get("version") == CACHE_FORMAT_VERSION:
                 return data
+            else:
+                log_info(f"Cache version mismatch (found {data.get('version')}, need {CACHE_FORMAT_VERSION}), reprocessing")
         except (json.JSONDecodeError, IOError):
             pass
-    return {"version": 1, "root": str(folder), "files": {}}
+    return {"version": CACHE_FORMAT_VERSION, "root": str(folder), "files": {}}
 
 
 def save_hash_cache(folder, cache):
@@ -83,6 +88,7 @@ def save_hash_cache(folder, cache):
     cache_path = _cache_path(folder)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache["root"] = str(folder)
+    cache["version"] = CACHE_FORMAT_VERSION
     try:
         with open(cache_path, "w") as f:
             json.dump(cache, f, indent=2)
