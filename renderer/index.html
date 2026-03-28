@@ -569,6 +569,7 @@ let showFolderName = localStorage.getItem('showFolderName') !== 'false'; // defa
 let KEPT_FACES = new Set(); // person names marked as "kept"
 let faceFilterMode = 'all'; // 'all' | 'kept'
 let scanInProgress = false;
+let galleryFacePersonFilter = ''; // specific person name filter from Faces tab click
 
 // ---- Electron-native dialog helpers (NO browser alert/confirm/prompt) ----
 async function showMsg(message, detail, type = 'info') {
@@ -902,8 +903,14 @@ function fillSelect(id, values) {
 }
 
 function refreshFaceUI() {
-  // Don't populate individual face options in gallery filter dropdown anymore
-  // Gallery has: All Photos, ★ Kept Faces, Has Faces, No Faces
+  // Show/hide "★ Kept Faces" option based on whether any faces are kept
+  const keptOption = document.querySelector('#filterFace option[value="__kept_faces__"]');
+  if (keptOption) {
+    keptOption.style.display = KEPT_FACES.size > 0 ? '' : 'none';
+    if (KEPT_FACES.size === 0 && document.getElementById('filterFace').value === '__kept_faces__') {
+      document.getElementById('filterFace').value = '';
+    }
+  }
 
   // Face avatars: show ONLY kept faces (not all 50+)
   const avatarDiv = document.getElementById('faceAvatars');
@@ -956,9 +963,11 @@ function applyFilters() {
     if (face === '__kept_faces__') {
       if (!f.faces || f.faces.length === 0) return false;
       if (!f.faces.some(p => KEPT_FACES.has(p))) return false;
-    } else if (face === '__has_face__' && (!f.faces || f.faces.length === 0)) return false;
-    else if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
-    else if (face && face !== '__has_face__' && face !== '__no_face__' && face !== '__kept_faces__' && (!f.faces || !f.faces.includes(face))) return false;
+    } else if (face === '__has_face__') {
+      if (!f.faces || f.faces.length === 0) return false;
+      // If a specific person is selected from Faces tab, filter to that person
+      if (galleryFacePersonFilter && !f.faces.includes(galleryFacePersonFilter)) return false;
+    } else if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
     if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
     if (tag === '__no_tag__' && f.tags && f.tags.length > 0) return false;
     if (tag && tag !== '__has_tag__' && tag !== '__no_tag__' && (!f.tags || !f.tags.includes(tag))) return false;
@@ -1585,6 +1594,8 @@ function resetFilters() {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
+// Clear person-specific filter when user manually changes face dropdown
+document.getElementById('filterFace').addEventListener('change', () => { galleryFacePersonFilter = ''; });
 
 // ---- Settings ----
 function toggleFolderDisplay() {
@@ -2037,9 +2048,10 @@ async function toggleKeepFace(personName) {
 }
 
 function filterByFace(personName) {
-  // Switch to gallery, set face filter, apply
+  // Switch to gallery, apply person-specific filter
+  galleryFacePersonFilter = personName;
   switchTab('gallery');
-  document.getElementById('filterFace').value = personName;
+  document.getElementById('filterFace').value = '__has_face__';
   applyFilters();
 }
 
@@ -2239,6 +2251,8 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
   const res = fileData && fileData.resolution !== 'Unknown' ? fileData.resolution : '';
   const checked = DUP_SELECTED.has(relPath) ? 'checked' : '';
   const rowClass = isKeeper ? 'dup-row is-keeper' : 'dup-row';
+  // Safe-escape path for use in onclick attributes
+  const safeRelPath = relPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
   // Similarity badge (for near duplicates)
   let simHtml = '';
@@ -2268,7 +2282,7 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
   if (isKeeper) {
     keeperHtml = '<span class="keeper-badge">KEEP</span>';
   } else {
-    keeperHtml = `<button class="set-keeper-btn" onclick="setKeeper('${groupKey}','${relPath}')">Set as keeper</button>`;
+    keeperHtml = `<button class="set-keeper-btn" onclick="setKeeper('${groupKey}','${safeRelPath}')">Set as keeper</button>`;
   }
 
   // Copy badge
@@ -2277,7 +2291,7 @@ function renderDupRow(relPath, fileData, isKeeper, groupKey, distance, isSuggest
 
   return `<div class="${rowClass}">
     <input type="checkbox" ${isKeeper ? 'disabled' : ''} ${checked}
-      onchange="toggleDupSelect('${relPath}', this.checked)">
+      onchange="toggleDupSelect('${safeRelPath}', this.checked)">
     ${thumbTag}
     <div class="dup-info">
       <div class="dup-name" title="${relPath}">${relPath}</div>
@@ -2344,8 +2358,11 @@ function updateSelectionCount() {
 // ---- Keeper Override ----
 function setKeeper(groupKey, relPath) {
   DUP_KEEPERS[groupKey] = relPath;
-  // Remove new keeper from selection, add old keeper's duplicates
+  // Remove new keeper from selection (keeper must never be selected for delete)
   DUP_SELECTED.delete(relPath);
+  // Validate: ensure no other file in this group is also marked as keeper
+  // (The rendering logic uses DUP_KEEPERS[gKey] || group.keep for each group,
+  //  so setting DUP_KEEPERS[gKey] overrides group.keep — exactly one keeper)
   renderDuplicates();
 }
 
