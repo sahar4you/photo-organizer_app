@@ -1,7 +1,7 @@
 {
   "name": "photo-organizer",
-  "version": "1.2.0",
-  "description": "Google Photos-style offline photo organizer with face detection",
+  "version": "1.0.0",
+  "description": "Offline photo organizer with face detection, duplicate detection, and smart filtering — by INDIATECH247",
   "main": "main.js",
   "scripts": {
     "postinstall": "python python/setup_env.py || python3 python/setup_env.py || echo [WARN] Python dependency setup skipped - Python not found",
