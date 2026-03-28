@@ -7,6 +7,7 @@ const { spawn, execSync } = require('child_process');
 let mainWindow;
 let pythonDepsReady = false;
 let pythonAvailable = false;
+let activeScanProcess = null; // track running scanner for cancel/stop
 
 // ---- Python environment bootstrap ----
 
@@ -176,6 +177,8 @@ async function spawnScanner(folderPath, extraArgs) {
     }
 
     const proc = spawn(scannerInfo.cmd, scannerInfo.args, { cwd: scannerInfo.cwd });
+    activeScanProcess = proc;
+    proc.on('close', () => { if (activeScanProcess === proc) activeScanProcess = null; });
 
     let buffer = '';
     let resultData = null;
@@ -342,6 +345,19 @@ ipcMain.handle('list-subfolders', async (event, folderPath) => {
   } catch (_) {
     return [];
   }
+});
+
+// Stop/cancel active scan
+ipcMain.handle('stop-scan', async () => {
+  if (activeScanProcess) {
+    try {
+      activeScanProcess.kill('SIGTERM');
+      console.log('[SCAN] Scan process terminated by user');
+    } catch (_) {}
+    activeScanProcess = null;
+    return { status: 'stopped' };
+  }
+  return { status: 'no_scan_running' };
 });
 
 function hideCacheFolder(folderPath) {
