@@ -606,6 +606,32 @@ DUPLICATES_DIR = "__duplicates__"
 # ---- Cache versioning ----
 CACHE_VERSION = "v4"
 
+# ---- Face cache: skip re-processing unchanged files ----
+def _face_cache_path(folder):
+    return Path(folder) / ".cache" / "data" / "face_cache.json"
+
+def load_face_cache(folder):
+    p = _face_cache_path(folder)
+    if p.exists():
+        try:
+            with open(p) as f:
+                data = json.load(f)
+            if data.get("version") == CACHE_VERSION:
+                return data
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"version": CACHE_VERSION, "files": {}}
+
+def save_face_cache(folder, cache):
+    p = _face_cache_path(folder)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    cache["version"] = CACHE_VERSION
+    try:
+        with open(p, "w") as f:
+            json.dump(cache, f)
+    except IOError:
+        pass
+
 # ---- Multiprocessing face detection worker ----
 _stop_flag = False
 
@@ -896,19 +922,43 @@ def scan_folder(folder):
             log_info(f"[SCAN] {pct}% ({i+1}/{total_count})")
             emit_progress(pct, i + 1, total_count, "scanning")
 
-    # ---- Parallel face detection ----
+    # ---- Parallel face detection (with smart cache) ----
     if face_detection_enabled:
         emit_progress(100, total_count, total_count, "detecting faces")
         log_info("Running face detection...")
-        image_files = [(i, str(f["path"])) for i, f in enumerate(files) if f["type"] == "image"]
+
+        # Load face cache to skip unchanged files
+        face_cache = load_face_cache(folder)
+        cached_files = face_cache.get("files", {})
+
+        all_image_files = [(i, f) for i, f in enumerate(files) if f["type"] == "image"]
+        image_files = []  # files that need processing
+        cached_count = 0
+
+        for file_idx, f in all_image_files:
+            cache_key = f["rel_path"]
+            cached = cached_files.get(cache_key)
+            if (cached and cached.get("mtime") == f["mtime"]
+                    and cached.get("version") == CACHE_VERSION):
+                # Restore from cache — skip processing
+                files[file_idx]["face_count"] = cached.get("face_count", 0)
+                # Embeddings and thumbs from cache for clustering
+                for emb_data in cached.get("embeddings", []):
+                    all_face_data.append((file_idx, emb_data["emb"], emb_data.get("thumb", "")))
+                cached_count += 1
+            else:
+                image_files.append((file_idx, str(f["path"])))
+
+        if cached_count > 0:
+            log_info(f"Face cache: {cached_count} files from cache, {len(image_files)} new to process")
 
         # Determine cascade paths for worker processes
         cascade_p = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml' if face_cascade is not None else None
         profile_p = cv2.data.haarcascades + 'haarcascade_profileface.xml' if profile_cascade is not None else None
 
-        # Dynamic worker count + batch size
+        # Conservative worker count to keep CPU below 70%
         batch_size = 6
-        num_workers = min(6, max(1, (os.cpu_count() or 2) - 1))
+        num_workers = max(2, min(4, (os.cpu_count() or 2) - 1))
         log_info(f"Face detection: {num_workers} workers, {len(image_files)} images")
 
         # Build lookup: filepath -> file_idx
@@ -943,8 +993,8 @@ def scan_folder(folder):
                         log_debug(f"Face batch failed: {e}")
                     pct = int(done_count / len(batches) * 100)
                     emit_progress(pct, done_count * batch_size, len(image_files), "detecting faces")
-                    # CPU throttle: brief yield between batch completions
-                    time.sleep(0.01)
+                    # CPU throttle: yield between batch completions to keep CPU stable
+                    time.sleep(0.05)
         except Exception as e:
             log_error(f"Multiprocessing face detection failed, falling back to serial: {e}")
             # Serial fallback
@@ -957,6 +1007,23 @@ def scan_folder(folder):
                 for fi, emb in enumerate(embeddings):
                     ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
                     all_face_data.append((file_idx, emb, ft))
+
+    # Save face results to cache for next run
+    if face_detection_enabled:
+        for file_idx, f in enumerate(files):
+            if f["type"] != "image":
+                continue
+            cache_key = f["rel_path"]
+            embs_for_file = [(emb, ft) for fidx, emb, ft in all_face_data if fidx == file_idx]
+            cached_files[cache_key] = {
+                "mtime": f["mtime"],
+                "version": CACHE_VERSION,
+                "face_count": f.get("face_count", 0),
+                "embeddings": [{"emb": e, "thumb": t} for e, t in embs_for_file],
+            }
+        face_cache["files"] = cached_files
+        save_face_cache(folder, face_cache)
+        log_info("Face cache saved")
 
     total_faces = sum(1 for f in files if f.get("face_count", 0) > 0)
     log_info(f"Scanned {len(files)} files. Faces detected: {total_faces} images, {len(all_face_data)} embeddings")
