@@ -759,6 +759,42 @@ async function rescan() {
 
 async function scanCurrentFolder() {
   scanInProgress = true;
+
+  // ---- PHASE 0: Cache-first — try loading full result from cache ----
+  try {
+    const cachedResult = await window.api.loadScanCache(currentFolder);
+    if (cachedResult && cachedResult.files && cachedResult.files.length > 0) {
+      console.log('[CACHE] Loaded from scan result cache — instant load');
+      DATA = cachedResult.files || [];
+      PERSON_THUMBS = cachedResult.person_thumbs || {};
+      DUP_GROUPS = cachedResult.duplicate_groups || null;
+      DUP_SELECTED = new Set();
+      DUP_KEEPERS = {};
+
+      // Load persisted state
+      try { const ignored = await window.api.loadIgnoredGroups(currentFolder); IGNORED_GROUPS = new Set(ignored || []); } catch (_) { IGNORED_GROUPS = new Set(); }
+      try { TAGS_MAP = await window.api.loadTags(currentFolder) || {}; } catch (_) { TAGS_MAP = {}; }
+      try { const kf = await window.api.loadFaceNames(currentFolder); KEPT_FACES = new Set(Object.keys(kf).filter(k => kf[k] === '__kept__')); } catch (_) { KEPT_FACES = new Set(); }
+
+      DATA.forEach(f => { if (f.rel_path && TAGS_MAP[f.rel_path]) f.tags = TAGS_MAP[f.rel_path]; });
+      DATA.forEach(f => { f.thumb = ''; }); // lazy loading handles thumbnails
+      SELECTED_PHOTOS = new Set();
+      selectMode = false;
+
+      showGalleryUI();
+      addToFolderHistory(currentFolder);
+      populateFilters();
+      applyFilters();
+      updateDupBadge();
+      updateFacesBadge();
+      if (activeTab === 'duplicates') renderDuplicates();
+      if (activeTab === 'faces') renderFacesPanel();
+      scanInProgress = false;
+      return; // No scan needed!
+    }
+  } catch (_) {}
+
+  // ---- No valid cache — run 2-phase scan ----
   document.getElementById('loadingOverlay').classList.add('open');
   document.getElementById('progressText').textContent = 'Loading images...';
   document.getElementById('progressBarTrack').style.display = 'block';
@@ -775,7 +811,6 @@ async function scanCurrentFolder() {
       document.getElementById('progressBarFill').style.width = pct + '%';
       document.getElementById('progressText').textContent = `Loading ${pct}% (${cur} / ${tot} images)`;
     } else if (scanPhase === 'full') {
-      // Update tab-level progress during background scan
       if (msg.status === 'scanning') {
         updateTabProgress('faces', pct, cur, tot, `Processing ${pct}% (${cur} / ${tot})`);
         updateTabProgress('duplicates', pct, cur, tot, `Processing ${pct}% (${cur} / ${tot})`);
@@ -802,7 +837,6 @@ async function scanCurrentFolder() {
     DUP_KEEPERS = {};
     IGNORED_GROUPS = new Set();
 
-    // Load persisted state
     try { const ignored = await window.api.loadIgnoredGroups(currentFolder); IGNORED_GROUPS = new Set(ignored || []); } catch (_) {}
     try { TAGS_MAP = await window.api.loadTags(currentFolder) || {}; } catch (_) { TAGS_MAP = {}; }
     try { const kf = await window.api.loadFaceNames(currentFolder); KEPT_FACES = new Set(Object.keys(kf).filter(k => kf[k] === '__kept__')); } catch (_) { KEPT_FACES = new Set(); }
@@ -811,15 +845,7 @@ async function scanCurrentFolder() {
     SELECTED_PHOTOS = new Set();
     selectMode = false;
 
-    // Show gallery IMMEDIATELY
-    document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
-    document.getElementById('folderName').title = currentFolder;
-    document.getElementById('btnRescan').style.display = 'block';
-    document.getElementById('filtersPanel').style.display = '';
-    document.getElementById('welcomeScreen').style.display = 'none';
-    document.getElementById('tabBar').style.display = 'flex';
-    document.getElementById('gallery').style.display = '';
-
+    showGalleryUI();
     addToFolderHistory(currentFolder);
     populateFilters();
     applyFilters();
@@ -833,7 +859,6 @@ async function scanCurrentFolder() {
     return;
   }
 
-  // Hide loading overlay — gallery is now visible
   document.getElementById('loadingOverlay').classList.remove('open');
   document.getElementById('progressBarTrack').style.display = 'none';
 
@@ -844,17 +869,31 @@ async function scanCurrentFolder() {
 
   try {
     const fullResult = await window.api.scanFolderFull(currentFolder);
-    // Merge full results into existing DATA
+
+    // Merge full results — preserve existing quality scores if present
+    const oldQuality = {};
+    DATA.forEach(f => {
+      if (f.quality_score > 0) oldQuality[f.rel_path] = {
+        quality_score: f.quality_score, quality_label: f.quality_label,
+        sharpness: f.sharpness, resolution_score: f.resolution_score, size_score: f.size_score
+      };
+    });
+
     DATA = fullResult.files || DATA;
     PERSON_THUMBS = fullResult.person_thumbs || {};
     DUP_GROUPS = fullResult.duplicate_groups || null;
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
 
-    // Memory optimization: strip inline base64 thumbs (lazy loading handles display)
-    DATA.forEach(f => { f.thumb = ''; });
+    // Restore quality scores that might have been zeroed during re-scan
+    DATA.forEach(f => {
+      const old = oldQuality[f.rel_path];
+      if (old && (!f.quality_score || f.quality_score === 0)) {
+        Object.assign(f, old);
+      }
+    });
 
-    // Re-apply tags
+    DATA.forEach(f => { f.thumb = ''; });
     DATA.forEach(f => { if (f.rel_path && TAGS_MAP[f.rel_path]) f.tags = TAGS_MAP[f.rel_path]; });
 
     populateFilters();
@@ -864,7 +903,17 @@ async function scanCurrentFolder() {
     if (activeTab === 'duplicates') renderDuplicates();
     if (activeTab === 'faces') renderFacesPanel();
 
-    // Clean stale thumbnails in background
+    // Save full result to cache for next app open
+    const cachePayload = {
+      files: DATA.map(f => ({ ...f, thumb: '' })), // strip thumbs from cache
+      person_thumbs: PERSON_THUMBS,
+      duplicate_groups: DUP_GROUPS,
+      total: DATA.length,
+      face_images: DATA.filter(f => f.face_count > 0).length,
+      persons: Object.keys(PERSON_THUMBS).length,
+    };
+    window.api.saveScanCache(currentFolder, cachePayload).catch(() => {});
+
     const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
     window.api.cleanupStaleThumbnails(currentFolder, validRels).catch(() => {});
   } catch (err) {
@@ -875,6 +924,16 @@ async function scanCurrentFolder() {
   hideTabProgress('duplicates');
 }
 let scanPhase = 'quick'; // 'quick' | 'full'
+
+function showGalleryUI() {
+  document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
+  document.getElementById('folderName').title = currentFolder;
+  document.getElementById('btnRescan').style.display = 'block';
+  document.getElementById('filtersPanel').style.display = '';
+  document.getElementById('welcomeScreen').style.display = 'none';
+  document.getElementById('tabBar').style.display = 'flex';
+  document.getElementById('gallery').style.display = '';
+}
 
 // ---- Filters ----
 function populateFilters() {
@@ -1350,9 +1409,21 @@ async function openLightbox(idx) {
     if (reason) side += `<br><span style="font-size:11px;font-style:italic;">${reason}</span>`;
     side += `</div></div>`;
   }
-  // Faces
+  // Faces — inline tagging
   if (f.faces && f.faces.length > 0) {
-    side += `<div><h4>Faces</h4><div class="lb-val">👤 ${f.faces.join(', ')}</div></div>`;
+    side += `<div><h4>Faces</h4><div class="lb-val">`;
+    f.faces.forEach(faceName => {
+      const escapedFace = faceName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      const thumb = PERSON_THUMBS[faceName];
+      const thumbHtml = thumb ? `<img src="data:image/jpeg;base64,${thumb}" style="width:24px;height:24px;border-radius:50%;vertical-align:middle;margin-right:4px;">` : '👤 ';
+      side += `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">`;
+      side += thumbHtml;
+      side += `<span style="flex:1;">${faceName}</span>`;
+      side += `<button onclick="renameFaceInline('${escapedFace}')" style="font-size:10px;padding:1px 6px;background:none;border:1px solid var(--border);color:var(--text2);border-radius:3px;cursor:pointer;" title="Rename this person">✏️</button>`;
+      side += `<button onclick="removeFaceFromImage('${escapedFace}', ${currentLbIndex})" style="font-size:10px;padding:1px 6px;background:none;border:1px solid var(--danger);color:var(--danger);border-radius:3px;cursor:pointer;" title="Remove from this image">✕</button>`;
+      side += `</div>`;
+    });
+    side += `</div></div>`;
   }
   // Tags
   if (f.tags && f.tags.length > 0) {
@@ -1376,6 +1447,63 @@ function closeLightbox() {
   document.getElementById('lightbox').classList.remove('open');
   const v = document.querySelector('#lbMedia video');
   if (v) v.pause();
+}
+
+// ---- Inline face tagging (lightbox) ----
+async function renameFaceInline(oldName) {
+  // Use in-app confirm modal (Electron dialogs don't support text input)
+  let html = `<p style="font-size:12px;">Rename <b>${oldName}</b> globally across all photos:</p>`;
+  html += `<input type="text" id="faceRenameInput" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;margin-top:8px;" value="${oldName}" placeholder="New name...">`;
+  openConfirm('Rename Face', html, 'Rename', 'btn-save', async () => {
+    const newName = document.getElementById('faceRenameInput').value.trim();
+    if (!newName || newName === oldName) return;
+    // Apply rename globally
+    const nameMap = { [oldName]: newName };
+    try {
+      await window.api.saveFaceNames(currentFolder, nameMap);
+    } catch (_) {}
+    // Update DATA in-place
+    DATA.forEach(f => {
+      if (f.faces) f.faces = f.faces.map(face => face === oldName ? newName : face);
+    });
+    // Update PERSON_THUMBS
+    if (PERSON_THUMBS[oldName]) {
+      PERSON_THUMBS[newName] = PERSON_THUMBS[oldName];
+      delete PERSON_THUMBS[oldName];
+    }
+    // Update KEPT_FACES
+    if (KEPT_FACES.has(oldName)) {
+      KEPT_FACES.delete(oldName);
+      KEPT_FACES.add(newName);
+    }
+    populateFilters();
+    applyFilters();
+    updateFacesBadge();
+    // Refresh lightbox panel
+    if (currentLbIndex >= 0) openLightbox(currentLbIndex);
+  });
+}
+
+async function removeFaceFromImage(faceName, fileIdx) {
+  if (fileIdx < 0 || fileIdx >= filtered.length) return;
+  const f = filtered[fileIdx];
+  const ok = await showConfirmDialog(
+    `Remove "${faceName}" from this image?`,
+    'This only removes the face label from this image, not from other images.',
+    'Remove'
+  );
+  if (!ok) return;
+  f.faces = (f.faces || []).filter(face => face !== faceName);
+  f.face_count = f.faces.length;
+  // Also update in DATA
+  const dataEntry = DATA.find(d => d.rel_path === f.rel_path);
+  if (dataEntry) {
+    dataEntry.faces = [...f.faces];
+    dataEntry.face_count = f.face_count;
+  }
+  updateFacesBadge();
+  // Refresh lightbox panel
+  if (currentLbIndex >= 0) openLightbox(currentLbIndex);
 }
 
 function navLightbox(dir) {

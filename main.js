@@ -360,6 +360,78 @@ ipcMain.handle('stop-scan', async () => {
   return { status: 'no_scan_running' };
 });
 
+// ---- Scan Result Cache (cache-first architecture) ----
+// Saves the full scan result so app reopen is instant
+
+ipcMain.handle('load-scan-cache', async (event, folderPath) => {
+  const cachePath = path.join(folderPath, '.cache', 'data', 'scan_result_cache.json');
+  if (!fs.existsSync(cachePath)) return null;
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    const cache = JSON.parse(raw);
+    if (!cache || !cache.signature || !cache.result) return null;
+
+    // Validate signature: quick file count + total size check
+    // Build current signature from folder contents
+    const currentSig = buildFolderSignature(folderPath);
+    if (cache.signature !== currentSig) {
+      console.log('[CACHE] Scan cache stale (folder changed)');
+      return null;
+    }
+    console.log('[CACHE] Scan cache hit — instant load');
+    return cache.result;
+  } catch (_) {
+    return null;
+  }
+});
+
+ipcMain.handle('save-scan-cache', async (event, folderPath, result) => {
+  const dataDir = path.join(folderPath, '.cache', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  const cachePath = path.join(dataDir, 'scan_result_cache.json');
+  try {
+    const signature = buildFolderSignature(folderPath);
+    // Strip large fields (thumbs already stripped in renderer, person_thumbs kept small)
+    fs.writeFileSync(cachePath, JSON.stringify({ signature, result }, null, 0), 'utf8');
+    console.log('[CACHE] Scan result saved');
+  } catch (_) {}
+});
+
+function buildFolderSignature(folderPath) {
+  // Lightweight signature: file count + newest mtime in the folder tree
+  // Much faster than hashing all files
+  try {
+    let count = 0;
+    let newest = 0;
+    const mediaExts = new Set(['.jpg','.jpeg','.png','.gif','.bmp','.webp','.tiff','.tif','.heic','.mp4','.mov','.avi','.mkv','.wmv','.3gp']);
+    const walk = (dir) => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.name === '__duplicates__' || e.name === '.cache' || e.name === 'node_modules') continue;
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            walk(full);
+          } else {
+            const ext = path.extname(e.name).toLowerCase();
+            if (mediaExts.has(ext)) {
+              count++;
+              try {
+                const mt = fs.statSync(full).mtimeMs;
+                if (mt > newest) newest = mt;
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+    };
+    walk(folderPath);
+    return `${count}:${Math.floor(newest)}`;
+  } catch (_) {
+    return '';
+  }
+}
+
 function hideCacheFolder(folderPath) {
   if (process.platform !== 'win32') return;
   const cacheDir = path.join(folderPath, '.cache');

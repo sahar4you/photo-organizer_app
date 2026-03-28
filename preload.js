@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('api', {
   scanFolder: (folderPath) => ipcRenderer.invoke('scan-folder', folderPath),
   scanFolderQuick: (folderPath) => ipcRenderer.invoke('scan-folder-quick', folderPath),
   scanFolderFull: (folderPath) => ipcRenderer.invoke('scan-folder-full', folderPath),
+  loadScanCache: (folderPath) => ipcRenderer.invoke('load-scan-cache', folderPath),
+  saveScanCache: (folderPath, result) => ipcRenderer.invoke('save-scan-cache', folderPath, result),
   listSubfolders: (folderPath) => ipcRenderer.invoke('list-subfolders', folderPath),
   stopScan: () => ipcRenderer.invoke('stop-scan'),
   validateFolder: (folderPath) => ipcRenderer.invoke('validate-folder', folderPath),
