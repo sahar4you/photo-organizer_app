@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
   moveDuplicates: (folderPath) => ipcRenderer.invoke('move-duplicates', folderPath),
   trashFiles: (filePaths) => ipcRenderer.invoke('trash-files', filePaths),
+  deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
+  showMessageBox: (options) => ipcRenderer.invoke('show-message-box', options),
   saveIgnoredGroups: (folderPath, groups) => ipcRenderer.invoke('save-ignored-groups', folderPath, groups),
   loadIgnoredGroups: (folderPath) => ipcRenderer.invoke('load-ignored-groups', folderPath),
   saveTags: (folderPath, tagsMap) => ipcRenderer.invoke('save-tags', folderPath, tagsMap),

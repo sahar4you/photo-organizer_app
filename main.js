@@ -269,6 +269,38 @@ ipcMain.handle('get-python-status', async () => {
   };
 });
 
+// Show native message box (replaces browser alert/confirm)
+ipcMain.handle('show-message-box', async (event, options) => {
+  const result = await dialog.showMessageBox(mainWindow, options);
+  return result;
+});
+
+// Delete a single file (for lightbox delete) — with native confirmation dialog
+ipcMain.handle('delete-file', async (event, filePath) => {
+  const absPath = path.resolve(filePath);
+  if (!fs.existsSync(absPath)) {
+    return { status: 'error', message: 'File not found' };
+  }
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Delete'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Delete File',
+    message: 'Are you sure you want to delete this file?',
+    detail: path.basename(absPath),
+  });
+  if (result.response === 1) {
+    try {
+      await shell.trashItem(absPath);
+      return { status: 'trashed', path: filePath };
+    } catch (e) {
+      return { status: 'error', message: e.message };
+    }
+  }
+  return { status: 'cancelled' };
+});
+
 // Pick folder
 ipcMain.handle('pick-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {

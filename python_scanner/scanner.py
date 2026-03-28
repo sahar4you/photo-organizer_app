@@ -26,6 +26,12 @@ try:
 except ImportError:
     HAS_FACE = False
 
+try:
+    import face_recognition as _face_rec
+    HAS_FACE_REC = True
+except ImportError:
+    HAS_FACE_REC = False
+
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif', '.heic'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.3gp'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
@@ -351,7 +357,8 @@ def _detect_faces_dnn(img):
     5. Edge rejection (face touching image border)
     6. Blur detection (Laplacian variance > 80)
     7. Eye validation (exactly 2 eyes in upper 50% of face ROI)
-    8. Max faces cap (keep largest 5 if too many detections)
+    8. Human face verification via face_recognition (rejects animals/objects)
+    9. Max faces cap (keep largest 5 if too many detections)
     """
     net = _get_dnn_detector()
     if net is None:
@@ -430,11 +437,25 @@ def _detect_faces_dnn(img):
                 log_debug(f"DNN reject: expected 2 eyes, found {eye_count}, conf={confidence:.2f}")
                 continue
 
+        # Stage 8: Human face verification via face_recognition library
+        if HAS_FACE_REC:
+            face_roi_rgb = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+            # face_recognition expects full image + face location in (top, right, bottom, left) format
+            # Passing the cropped ROI and checking if any encoding is found
+            try:
+                encodings = _face_rec.face_encodings(face_roi_rgb, known_face_locations=[(0, fw, fh, 0)])
+                if not encodings:
+                    log_debug(f"DNN reject: face_recognition found no human face encoding, conf={confidence:.2f}")
+                    continue
+            except Exception:
+                # If face_recognition fails on this ROI, skip verification (allow through)
+                pass
+
         faces.append((x1, y1, fw, fh))
         log_debug(f"DNN accept: conf={confidence:.3f}, size={fw}x{fh}, "
                   f"area={face_area}, blur={blur_var:.0f}, eyes={eye_count}")
 
-    # Stage 8: Cap max faces — keep only the largest if too many detections
+    # Stage 9: Cap max faces — keep only the largest if too many detections
     if len(faces) > DNN_MAX_FACES_PER_IMAGE:
         log_debug(f"DNN cap: {len(faces)} faces found, keeping largest {DNN_MAX_FACES_PER_IMAGE}")
         faces.sort(key=lambda f: f[2] * f[3], reverse=True)
