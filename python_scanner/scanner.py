@@ -936,38 +936,156 @@ def scan_folder(folder):
 if __name__ == "__main__":
     folder = sys.argv[1] if len(sys.argv) > 1 else "."
     json_mode = "--json" in sys.argv
+    quick_mode = "--quick" in sys.argv
 
     folder = Path(folder).resolve()
     if not folder.is_dir():
         emit_error(f"Not a directory: {folder}")
         sys.exit(1)
 
-    files, person_thumbs, duplicate_result = scan_folder(folder)
+    if quick_mode:
+        # Phase 1: Fast metadata-only scan (no faces, no duplicates, no thumbnails)
+        log_info("Quick scan mode: metadata only")
+        all_media = _collect_media_files(folder)
+        total_count = len(all_media)
+        files = []
+        for i, (filepath, rel_path) in enumerate(all_media):
+            name = filepath.name
+            ext = filepath.suffix.lower()
+            try:
+                stat = filepath.stat()
+            except OSError:
+                continue
+            size_bytes = stat.st_size
+            size_mb = round(size_bytes/(1024*1024), 2)
+            mod_time = datetime.fromtimestamp(stat.st_mtime)
+            is_video = ext in VIDEO_EXTENSIONS
+            media_type = "video" if is_video else "image"
 
-    emit_progress(100, len(files), len(files), "finalizing")
+            date_taken = None
+            camera = ""
+            camera_make = ""
+            camera_model = ""
+            resolution = ""
+            img_width, img_height = 0, 0
+            iso, exposure, focal_length, aperture = None, None, None, None
+            dpi, bit_depth = None, None
+            gps_lat, gps_lon = None, None
 
-    result = {
-        "folder": str(folder),
-        "files": files,
-        "person_thumbs": person_thumbs,
-        "total": len(files),
-        "face_images": sum(1 for f in files if f.get("face_count",0) > 0),
-        "persons": len(person_thumbs),
-    }
+            if not is_video:
+                exif = get_exif_data(str(filepath))
+                date_taken = get_date_from_exif(exif)
+                camera_make = str(exif.get('Make','')).strip()
+                camera_model = str(exif.get('Model','')).strip()
+                camera = f"{camera_make} {camera_model}".strip() if camera_model else camera_make
+                # Quick resolution via PIL
+                if HAS_PIL:
+                    try:
+                        with Image.open(str(filepath)) as pil_img:
+                            img_width, img_height = pil_img.size
+                            resolution = f"{img_width}x{img_height}"
+                    except Exception:
+                        pass
+                gps_info = exif.get('GPSInfo')
+                if gps_info: gps_lat, gps_lon = get_gps_coords(gps_info)
 
-    # Attach duplicate groups to result
-    if duplicate_result:
-        result["duplicate_groups"] = {
-            "exact": duplicate_result["exact"],
-            "near": duplicate_result["near"],
+            if not date_taken: date_taken = get_date_from_filename(name)
+            if not date_taken: date_taken = mod_time
+
+            entry = {
+                "name": name,
+                "path": str(filepath),
+                "rel_path": rel_path,
+                "type": media_type,
+                "ext": ext.lstrip('.'),
+                "size_mb": size_mb,
+                "size_bytes": size_bytes,
+                "mtime": stat.st_mtime,
+                "date": date_taken.strftime("%Y-%m-%d %H:%M:%S"),
+                "year": date_taken.strftime("%Y"),
+                "month": date_taken.strftime("%Y-%m"),
+                "day": date_taken.strftime("%Y-%m-%d"),
+                "camera": camera or "Unknown",
+                "camera_make": camera_make or None,
+                "camera_model": camera_model or None,
+                "resolution": resolution or "Unknown",
+                "width": img_width,
+                "height": img_height,
+                "dpi": dpi,
+                "bit_depth": bit_depth,
+                "iso": iso if not is_video else None,
+                "exposure": exposure if not is_video else None,
+                "aperture": aperture if not is_video else None,
+                "focal_length": focal_length if not is_video else None,
+                "has_gps": gps_lat is not None,
+                "gps_lat": gps_lat,
+                "gps_lon": gps_lon,
+                "thumb": "",
+                "quality_score": None if is_video else 0,
+                "quality_label": None if is_video else "",
+                "sharpness": None if is_video else 0,
+                "resolution_score": None if is_video else 0,
+                "size_score": None if is_video else 0,
+                "faces": [],
+                "face_count": 0,
+                "tags": [],
+            }
+            files.append(entry)
+            if (i + 1) % 50 == 0 or (i + 1) == total_count:
+                pct = int((i+1)/total_count*100) if total_count else 100
+                emit_progress(pct, i + 1, total_count, "scanning")
+
+        # Load and apply photo tags
+        tags_path = folder / ".cache" / "data" / "photo_tags.json"
+        if not tags_path.exists():
+            tags_path = folder / "photo_tags.json"
+        if tags_path.exists():
+            try:
+                with open(tags_path) as f:
+                    tags_map = json.load(f)
+                for entry in files:
+                    entry["tags"] = tags_map.get(entry["rel_path"], [])
+            except Exception:
+                pass
+
+        result = {
+            "folder": str(folder),
+            "files": files,
+            "person_thumbs": {},
+            "total": len(files),
+            "face_images": 0,
+            "persons": 0,
         }
-        result["duplicate_stats"] = duplicate_result["stats"]
-        result["duplicate_moved"] = duplicate_result["moved"]
+        log_info(f"Quick scan complete: {len(files)} files")
+        emit_result(result)
+    else:
+        # Phase 2: Full scan (faces, duplicates, thumbnails, quality)
+        files, person_thumbs, duplicate_result = scan_folder(folder)
 
-    log_info(f"Complete: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
-    if duplicate_result:
-        s = duplicate_result["stats"]
-        log_info(f"Duplicate groups found: {s['exact_groups']} exact, "
-                 f"{s['near_groups']} near, {s['duplicates_found']} total duplicates")
+        emit_progress(100, len(files), len(files), "finalizing")
 
-    emit_result(result)
+        result = {
+            "folder": str(folder),
+            "files": files,
+            "person_thumbs": person_thumbs,
+            "total": len(files),
+            "face_images": sum(1 for f in files if f.get("face_count",0) > 0),
+            "persons": len(person_thumbs),
+        }
+
+        # Attach duplicate groups to result
+        if duplicate_result:
+            result["duplicate_groups"] = {
+                "exact": duplicate_result["exact"],
+                "near": duplicate_result["near"],
+            }
+            result["duplicate_stats"] = duplicate_result["stats"]
+            result["duplicate_moved"] = duplicate_result["moved"]
+
+        log_info(f"Complete: {len(files)} files, {result['face_images']} with faces, {result['persons']} people")
+        if duplicate_result:
+            s = duplicate_result["stats"]
+            log_info(f"Duplicate groups found: {s['exact_groups']} exact, "
+                     f"{s['near_groups']} near, {s['duplicates_found']} total duplicates")
+
+        emit_result(result)
