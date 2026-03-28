@@ -1010,6 +1010,10 @@ def scan_folder(folder):
 
     # Save face results to cache for next run
     if face_detection_enabled:
+        def _serialize_emb(emb):
+            """Convert embedding list to JSON-safe Python floats."""
+            return [round(float(x), 6) for x in emb]
+
         for file_idx, f in enumerate(files):
             if f["type"] != "image":
                 continue
@@ -1019,7 +1023,7 @@ def scan_folder(folder):
                 "mtime": f["mtime"],
                 "version": CACHE_VERSION,
                 "face_count": f.get("face_count", 0),
-                "embeddings": [{"emb": e, "thumb": t} for e, t in embs_for_file],
+                "embeddings": [{"emb": _serialize_emb(e), "thumb": t} for e, t in embs_for_file],
             }
         face_cache["files"] = cached_files
         save_face_cache(folder, face_cache)
