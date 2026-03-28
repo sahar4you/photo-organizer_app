@@ -956,57 +956,56 @@ def scan_folder(folder):
         cascade_p = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml' if face_cascade is not None else None
         profile_p = cv2.data.haarcascades + 'haarcascade_profileface.xml' if profile_cascade is not None else None
 
-        # Conservative worker count to keep CPU below 70%
-        batch_size = 6
-        num_workers = max(2, min(4, (os.cpu_count() or 2) - 1))
-        log_info(f"Face detection: {num_workers} workers, {len(image_files)} images")
+        if len(image_files) == 0:
+            log_info("All faces cached — skipping face detection")
+        else:
+            # Run multiprocessing only for new/changed files
+            batch_size = 6
+            num_workers = max(2, min(4, (os.cpu_count() or 2) - 1))
+            log_info(f"Face detection: {num_workers} workers, {len(image_files)} images")
 
-        # Build lookup: filepath -> file_idx
-        path_to_idx = {fp: idx for idx, fp in image_files}
-        batches = []
-        for b in range(0, len(image_files), batch_size):
-            batch_paths = [fp for _, fp in image_files[b:b+batch_size]]
-            batches.append((batch_paths, cascade_p, profile_p))
+            path_to_idx = {fp: idx for idx, fp in image_files}
+            batches = []
+            for b in range(0, len(image_files), batch_size):
+                batch_paths = [fp for _, fp in image_files[b:b+batch_size]]
+                batches.append((batch_paths, cascade_p, profile_p))
 
-        try:
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {executor.submit(_process_face_batch, batch): batch for batch in batches}
-                done_count = 0
-                for future in as_completed(futures):
+            try:
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    futures = {executor.submit(_process_face_batch, batch): batch for batch in batches}
+                    done_count = 0
+                    for future in as_completed(futures):
+                        if _stop_flag:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            log_info("Face detection stopped by user")
+                            break
+                        done_count += 1
+                        try:
+                            results = future.result(timeout=120)
+                            for filepath, rects, embeddings, face_thumbs in results:
+                                file_idx = path_to_idx.get(filepath)
+                                if file_idx is None:
+                                    continue
+                                files[file_idx]["face_count"] = len(rects)
+                                for fi, emb in enumerate(embeddings):
+                                    ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
+                                    all_face_data.append((file_idx, emb, ft))
+                        except Exception as e:
+                            log_debug(f"Face batch failed: {e}")
+                        pct = int(done_count / len(batches) * 100)
+                        emit_progress(pct, done_count * batch_size, len(image_files), "detecting faces")
+                        time.sleep(0.05)
+            except Exception as e:
+                log_error(f"Multiprocessing failed, falling back to serial: {e}")
+                for file_idx, filepath in image_files:
                     if _stop_flag:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        log_info("Face detection stopped by user")
                         break
-                    done_count += 1
-                    try:
-                        results = future.result(timeout=120)
-                        for filepath, rects, embeddings, face_thumbs in results:
-                            file_idx = path_to_idx.get(filepath)
-                            if file_idx is None:
-                                continue
-                            face_count = len(rects)
-                            files[file_idx]["face_count"] = face_count
-                            for fi, emb in enumerate(embeddings):
-                                ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
-                                all_face_data.append((file_idx, emb, ft))
-                    except Exception as e:
-                        log_debug(f"Face batch failed: {e}")
-                    pct = int(done_count / len(batches) * 100)
-                    emit_progress(pct, done_count * batch_size, len(image_files), "detecting faces")
-                    # CPU throttle: yield between batch completions to keep CPU stable
-                    time.sleep(0.05)
-        except Exception as e:
-            log_error(f"Multiprocessing face detection failed, falling back to serial: {e}")
-            # Serial fallback
-            for file_idx, filepath in image_files:
-                if _stop_flag:
-                    break
-                rects, embeddings = detect_faces_cv(filepath, face_cascade, profile_cascade)
-                face_thumbs = extract_face_thumbs_cv(filepath, rects) if rects else []
-                files[file_idx]["face_count"] = len(rects)
-                for fi, emb in enumerate(embeddings):
-                    ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
-                    all_face_data.append((file_idx, emb, ft))
+                    rects, embeddings = detect_faces_cv(filepath, face_cascade, profile_cascade)
+                    face_thumbs = extract_face_thumbs_cv(filepath, rects) if rects else []
+                    files[file_idx]["face_count"] = len(rects)
+                    for fi, emb in enumerate(embeddings):
+                        ft = face_thumbs[fi] if fi < len(face_thumbs) else ""
+                        all_face_data.append((file_idx, emb, ft))
 
     # Save face results to cache for next run
     if face_detection_enabled:

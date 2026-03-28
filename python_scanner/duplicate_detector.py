@@ -532,7 +532,23 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
     """
     folder = Path(folder).resolve()
 
-    # Step 1: Load and prune cache
+    # Step 0: Check duplicate result cache — skip entirely if file set unchanged
+    dup_result_path = Path(folder) / ".cache" / "data" / "dup_result_cache.json"
+    file_signature = hashlib.md5(
+        json.dumps(sorted([(f["rel_path"], f["size_bytes"], f["mtime"]) for f in files])).encode()
+    ).hexdigest()
+
+    if dry_run and dup_result_path.exists():
+        try:
+            with open(dup_result_path) as f:
+                cached_result = json.load(f)
+            if cached_result.get("signature") == file_signature:
+                log_info("Duplicate cache hit — skipping detection (no file changes)")
+                return cached_result["result"]
+        except (json.JSONDecodeError, IOError, KeyError):
+            pass
+
+    # Step 1: Load and prune hash cache
     cache = load_hash_cache(folder)
     rel_paths = [f["rel_path"] for f in files]
     pruned = prune_cache(cache, rel_paths)
@@ -584,7 +600,7 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
     exact_dup_count = sum(len(g["duplicates"]) for g in exact_groups)
     near_dup_count = sum(len(g["duplicates"]) for g in near_groups)
 
-    return {
+    result = {
         "exact": exact_groups,
         "near": near_groups,
         "moved": moved,
@@ -595,3 +611,14 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
             "duplicates_found": exact_dup_count + near_dup_count,
         },
     }
+
+    # Save duplicate result cache for fast skip on next run
+    if dry_run:
+        try:
+            dup_result_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(dup_result_path, "w") as f:
+                json.dump({"signature": file_signature, "result": result}, f)
+        except IOError:
+            pass
+
+    return result

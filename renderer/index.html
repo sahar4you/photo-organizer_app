@@ -1478,7 +1478,22 @@ async function previewTrashSelected() {
     try {
       const results = await window.api.trashFiles(paths);
       const trashed = results.filter(r => r.status === 'trashed').length;
-      await scanCurrentFolder();
+      // Remove trashed files from DATA in-place (no rescan)
+      const trashedRels = new Set(items.filter((rel, i) => results[i] && results[i].status === 'trashed'));
+      DATA = DATA.filter(d => !trashedRels.has(d.rel_path));
+      if (DUP_GROUPS) {
+        for (const g of (DUP_GROUPS.exact || [])) g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+        for (const g of (DUP_GROUPS.near || [])) {
+          g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+          g.members = (g.members || []).filter(m => !trashedRels.has(m.rel_path));
+        }
+      }
+      SELECTED_PHOTOS = new Set();
+      exitSelectMode();
+      populateFilters();
+      applyFilters();
+      updateDupBadge();
+      updateFacesBadge();
       showMsg('Done', `${trashed} file(s) sent to recycle bin.`);
     } catch (err) { showMsg('Trash failed', err.message, 'error'); }
     document.getElementById('loadingOverlay').classList.remove('open');
@@ -1591,8 +1606,14 @@ function resetFilters() {
 
 // Attach filter events
 ['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterFolder','filterQuality','sortBy'].forEach(id => {
-  document.getElementById(id).addEventListener('input', applyFilters);
-  document.getElementById(id).addEventListener('change', applyFilters);
+  const el = document.getElementById(id);
+  const handler = () => {
+    // Auto-switch to gallery tab when any filter is changed
+    if (activeTab !== 'gallery') switchTab('gallery');
+    applyFilters();
+  };
+  el.addEventListener('input', handler);
+  el.addEventListener('change', handler);
 });
 // Clear person-specific filter when user manually changes face dropdown
 document.getElementById('filterFace').addEventListener('change', () => { galleryFacePersonFilter = ''; });
@@ -2476,7 +2497,8 @@ function previewTrashDups() {
 
 async function executeTrashDups() {
   // Use absolute paths from file objects (avoids path separator issues)
-  const paths = [...DUP_SELECTED].map(rel => {
+  const selectedRels = [...DUP_SELECTED];
+  const paths = selectedRels.map(rel => {
     const f = DATA.find(d => d.rel_path === rel);
     return f ? f.path : currentFolder + '/' + rel;
   });
@@ -2486,7 +2508,22 @@ async function executeTrashDups() {
     const results = await window.api.trashFiles(paths);
     const trashed = results.filter(r => r.status === 'trashed').length;
     const errors = results.filter(r => r.status === 'error');
-    await scanCurrentFolder();
+    // Remove trashed files from DATA in-place (no rescan)
+    const trashedRels = new Set(selectedRels.filter((_, i) => results[i] && results[i].status === 'trashed'));
+    DATA = DATA.filter(d => !trashedRels.has(d.rel_path));
+    if (DUP_GROUPS) {
+      for (const g of (DUP_GROUPS.exact || [])) g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+      for (const g of (DUP_GROUPS.near || [])) {
+        g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+        g.members = (g.members || []).filter(m => !trashedRels.has(m.rel_path));
+      }
+    }
+    DUP_SELECTED = new Set();
+    populateFilters();
+    applyFilters();
+    updateDupBadge();
+    updateFacesBadge();
+    renderDuplicates();
     let msg = `${trashed} file(s) sent to recycle bin.`;
     if (errors.length > 0) msg += `\n${errors.length} file(s) could not be trashed.`;
     showMsg('Done', msg);
