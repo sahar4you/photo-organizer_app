@@ -4,6 +4,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   scanFolder: (folderPath) => ipcRenderer.invoke('scan-folder', folderPath),
+  scanFolderQuick: (folderPath) => ipcRenderer.invoke('scan-folder-quick', folderPath),
+  scanFolderFull: (folderPath) => ipcRenderer.invoke('scan-folder-full', folderPath),
+  listSubfolders: (folderPath) => ipcRenderer.invoke('list-subfolders', folderPath),
   validateFolder: (folderPath) => ipcRenderer.invoke('validate-folder', folderPath),
   saveFaceNames: (folderPath, nameMap) => ipcRenderer.invoke('save-face-names', folderPath, nameMap),
   loadFaceNames: (folderPath) => ipcRenderer.invoke('load-face-names', folderPath),

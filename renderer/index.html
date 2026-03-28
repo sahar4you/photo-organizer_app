@@ -122,8 +122,11 @@
   .face-keep-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
 
   /* Face filter bar */
-  .face-filter-bar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .face-filter-bar { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
   .face-filter-bar select { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:12px; }
+  .face-toggle-btn { background:var(--card); color:var(--text2); border:1px solid var(--border); border-radius:6px; padding:5px 14px; font-size:12px; cursor:pointer; transition:all 0.15s; }
+  .face-toggle-btn:hover { border-color:var(--accent); color:var(--text); }
+  .face-toggle-btn.active { background:var(--accent); color:#000; border-color:var(--accent); font-weight:600; }
 
   /* Bulk delete button */
   .btn-tag-delete { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
@@ -731,78 +734,58 @@ async function rescan() {
 async function scanCurrentFolder() {
   scanInProgress = true;
   document.getElementById('loadingOverlay').classList.add('open');
-  document.getElementById('progressText').textContent = 'Scanning photos...';
+  document.getElementById('progressText').textContent = 'Loading images...';
   document.getElementById('progressBarTrack').style.display = 'block';
   document.getElementById('progressBarFill').style.width = '0%';
 
-  // Show tab-level progress indicators
-  showTabProgress('faces', 'Processing faces...');
-  showTabProgress('duplicates', 'Detecting duplicates...');
-
+  // Progress handler for both phases
   window.api.onScanProgressJson((msg) => {
     if (!msg || msg.value === undefined) return;
-    document.getElementById('progressBarFill').style.width = msg.value + '%';
     const pct = msg.value;
     const cur = msg.current || 0;
     const tot = msg.total || 0;
 
-    if (msg.status === 'scanning') {
-      const text = `Scanning ${pct}% (${cur} / ${tot} images)`;
-      document.getElementById('progressText').textContent = text;
-      updateTabProgress('faces', pct, cur, tot, `Scanning ${pct}% (${cur} / ${tot} images)`);
-      updateTabProgress('duplicates', pct, cur, tot, `Scanning ${pct}% (${cur} / ${tot} images)`);
-    } else if (msg.status === 'clustering faces') {
-      document.getElementById('progressText').textContent = 'Processing faces...';
-      updateTabProgress('faces', 100, tot, tot, 'Clustering faces...');
-    } else if (msg.status === 'detecting duplicates') {
-      document.getElementById('progressText').textContent = 'Detecting duplicates...';
-      updateTabProgress('duplicates', 100, tot, tot, 'Detecting duplicates...');
-      hideTabProgress('faces');
-    } else if (msg.status === 'finalizing') {
-      document.getElementById('progressText').textContent = 'Finalizing...';
-      hideTabProgress('faces');
-      hideTabProgress('duplicates');
-    } else {
-      document.getElementById('progressText').textContent = `Processing... ${pct}%`;
+    if (scanPhase === 'quick') {
+      document.getElementById('progressBarFill').style.width = pct + '%';
+      document.getElementById('progressText').textContent = `Loading ${pct}% (${cur} / ${tot} images)`;
+    } else if (scanPhase === 'full') {
+      // Update tab-level progress during background scan
+      if (msg.status === 'scanning') {
+        updateTabProgress('faces', pct, cur, tot, `Processing ${pct}% (${cur} / ${tot})`);
+        updateTabProgress('duplicates', pct, cur, tot, `Processing ${pct}% (${cur} / ${tot})`);
+      } else if (msg.status === 'clustering faces') {
+        updateTabProgress('faces', 100, tot, tot, 'Clustering faces...');
+      } else if (msg.status === 'detecting duplicates') {
+        hideTabProgress('faces');
+        updateTabProgress('duplicates', 100, tot, tot, 'Detecting duplicates...');
+      } else if (msg.status === 'finalizing') {
+        hideTabProgress('faces');
+        hideTabProgress('duplicates');
+      }
     }
   });
 
+  // ---- PHASE 1: Quick metadata scan (instant gallery) ----
+  scanPhase = 'quick';
   try {
-    const result = await window.api.scanFolder(currentFolder);
-    DATA = result.files || [];
-    PERSON_THUMBS = result.person_thumbs || {};
-    DUP_GROUPS = result.duplicate_groups || null;
+    const quickResult = await window.api.scanFolderQuick(currentFolder);
+    DATA = quickResult.files || [];
+    PERSON_THUMBS = {};
+    DUP_GROUPS = null;
     DUP_SELECTED = new Set();
     DUP_KEEPERS = {};
-    // Load persisted ignored groups
-    try {
-      const ignored = await window.api.loadIgnoredGroups(currentFolder);
-      IGNORED_GROUPS = new Set(ignored || []);
-    } catch (_) {
-      IGNORED_GROUPS = new Set();
-    }
-    // Load photo tags
-    try {
-      TAGS_MAP = await window.api.loadTags(currentFolder) || {};
-    } catch (_) {
-      TAGS_MAP = {};
-    }
-    // Load kept faces
-    try {
-      const kf = await window.api.loadFaceNames(currentFolder);
-      KEPT_FACES = new Set(Object.keys(kf).filter(k => kf[k] === '__kept__'));
-    } catch (_) {
-      KEPT_FACES = new Set();
-    }
-    // Apply tags from TAGS_MAP to DATA (in case scanner didn't have them)
-    DATA.forEach(f => {
-      if (f.rel_path && TAGS_MAP[f.rel_path]) {
-        f.tags = TAGS_MAP[f.rel_path];
-      }
-    });
+    IGNORED_GROUPS = new Set();
+
+    // Load persisted state
+    try { const ignored = await window.api.loadIgnoredGroups(currentFolder); IGNORED_GROUPS = new Set(ignored || []); } catch (_) {}
+    try { TAGS_MAP = await window.api.loadTags(currentFolder) || {}; } catch (_) { TAGS_MAP = {}; }
+    try { const kf = await window.api.loadFaceNames(currentFolder); KEPT_FACES = new Set(Object.keys(kf).filter(k => kf[k] === '__kept__')); } catch (_) { KEPT_FACES = new Set(); }
+
+    DATA.forEach(f => { if (f.rel_path && TAGS_MAP[f.rel_path]) f.tags = TAGS_MAP[f.rel_path]; });
     SELECTED_PHOTOS = new Set();
     selectMode = false;
 
+    // Show gallery IMMEDIATELY
     document.getElementById('folderName').textContent = currentFolder.split(/[\\/]/).pop();
     document.getElementById('folderName').title = currentFolder;
     document.getElementById('btnRescan').style.display = 'block';
@@ -816,6 +799,39 @@ async function scanCurrentFolder() {
     applyFilters();
     updateDupBadge();
     updateFacesBadge();
+  } catch (err) {
+    showMsg('Scan failed', err.message, 'error');
+    scanInProgress = false;
+    document.getElementById('loadingOverlay').classList.remove('open');
+    document.getElementById('progressBarTrack').style.display = 'none';
+    return;
+  }
+
+  // Hide loading overlay — gallery is now visible
+  document.getElementById('loadingOverlay').classList.remove('open');
+  document.getElementById('progressBarTrack').style.display = 'none';
+
+  // ---- PHASE 2: Full background scan (faces + duplicates + quality) ----
+  scanPhase = 'full';
+  showTabProgress('faces', 'Detecting faces...');
+  showTabProgress('duplicates', 'Detecting duplicates...');
+
+  try {
+    const fullResult = await window.api.scanFolderFull(currentFolder);
+    // Merge full results into existing DATA
+    DATA = fullResult.files || DATA;
+    PERSON_THUMBS = fullResult.person_thumbs || {};
+    DUP_GROUPS = fullResult.duplicate_groups || null;
+    DUP_SELECTED = new Set();
+    DUP_KEEPERS = {};
+
+    // Re-apply tags
+    DATA.forEach(f => { if (f.rel_path && TAGS_MAP[f.rel_path]) f.tags = TAGS_MAP[f.rel_path]; });
+
+    populateFilters();
+    applyFilters();
+    updateDupBadge();
+    updateFacesBadge();
     if (activeTab === 'duplicates') renderDuplicates();
     if (activeTab === 'faces') renderFacesPanel();
 
@@ -823,14 +839,13 @@ async function scanCurrentFolder() {
     const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
     window.api.cleanupStaleThumbnails(currentFolder, validRels).catch(() => {});
   } catch (err) {
-    showMsg('Scan failed', err.message, 'error');
+    console.error('Background scan failed:', err.message);
   }
   scanInProgress = false;
   hideTabProgress('faces');
   hideTabProgress('duplicates');
-  document.getElementById('loadingOverlay').classList.remove('open');
-  document.getElementById('progressBarTrack').style.display = 'none';
 }
+let scanPhase = 'quick'; // 'quick' | 'full'
 
 // ---- Filters ----
 function populateFilters() {
@@ -1675,12 +1690,22 @@ function handleTagKeydown(e) {
   e.stopPropagation();
 }
 
-function moveTaggedToFolder() {
+async function moveTaggedToFolder() {
   if (SELECTED_PHOTOS.size === 0) { showMsg('No photos selected', 'Select photos first before moving.'); return; }
   const items = [...SELECTED_PHOTOS];
+  // Get existing subfolders for suggestions
+  let subfolders = [];
+  try { subfolders = await window.api.listSubfolders(currentFolder); } catch (_) {}
+
   let listHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be moved.</p>`;
   listHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Target subfolder name:</label>';
-  listHtml += '<input type="text" id="moveTargetFolder" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. favorites">';
+  listHtml += '<div style="position:relative;">';
+  listHtml += '<input type="text" id="moveTargetFolder" autocomplete="off" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. favorites" oninput="filterFolderSuggestions()" onfocus="filterFolderSuggestions()">';
+  listHtml += '<div id="folderSuggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:0 0 6px 6px;max-height:120px;overflow-y:auto;z-index:10;"></div>';
+  listHtml += '</div>';
+  if (subfolders.length > 0) {
+    listHtml += `<div style="font-size:10px;color:var(--text2);margin-top:2px;">Existing: ${subfolders.slice(0, 5).join(', ')}${subfolders.length > 5 ? '...' : ''}</div>`;
+  }
   listHtml += '<div class="preview-list" style="margin-top:8px;">';
   items.slice(0, 20).forEach(rel => {
     listHtml += `<div class="preview-item"><span class="from">${rel}</span></div>`;
@@ -1688,7 +1713,26 @@ function moveTaggedToFolder() {
   if (items.length > 20) listHtml += `<div class="preview-item" style="color:var(--text2);">...and ${items.length - 20} more</div>`;
   listHtml += '</div>';
 
+  // Store subfolders for filtering
+  window._moveFolderSuggestions = subfolders;
   openConfirm('Move Photos to Folder', listHtml, 'Move Files', 'btn-save', executeMoveTagged);
+}
+
+function filterFolderSuggestions() {
+  const input = document.getElementById('moveTargetFolder');
+  const container = document.getElementById('folderSuggestions');
+  if (!input || !container) return;
+  const val = input.value.trim().toLowerCase();
+  const subs = window._moveFolderSuggestions || [];
+  const matches = val ? subs.filter(s => s.toLowerCase().includes(val)).slice(0, 5) : subs.slice(0, 5);
+  if (matches.length === 0 || (matches.length === 1 && matches[0].toLowerCase() === val)) {
+    container.style.display = 'none';
+    return;
+  }
+  container.innerHTML = matches.map(s =>
+    `<div style="padding:5px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);" onmousedown="document.getElementById('moveTargetFolder').value='${s.replace(/'/g, "\\'")}';document.getElementById('folderSuggestions').style.display='none';">${s}</div>`
+  ).join('');
+  container.style.display = 'block';
 }
 
 async function executeMoveTagged() {
@@ -1854,14 +1898,12 @@ function renderFacesPanel() {
 
   let html = progressHtml;
 
-  // Filter bar
+  // Toggle button filter bar
+  const keptCount = allPersons.filter(p => KEPT_FACES.has(p)).length;
   html += '<div class="face-filter-bar">';
   html += '<h3 style="font-size:14px;color:var(--accent);margin:0;">Detected Faces</h3>';
-  html += `<select onchange="setFaceFilter(this.value)">`;
-  html += `<option value="all" ${faceFilterMode === 'all' ? 'selected' : ''}>All Faces (${allPersons.length})</option>`;
-  const keptCount = allPersons.filter(p => KEPT_FACES.has(p)).length;
-  html += `<option value="kept" ${faceFilterMode === 'kept' ? 'selected' : ''}>Kept Faces (${keptCount})</option>`;
-  html += '</select>';
+  html += `<button class="face-toggle-btn ${faceFilterMode === 'all' ? 'active' : ''}" onclick="setFaceFilter('all')">All Faces (${allPersons.length})</button>`;
+  html += `<button class="face-toggle-btn ${faceFilterMode === 'kept' ? 'active' : ''}" onclick="setFaceFilter('kept')">★ Kept Faces (${keptCount})</button>`;
   html += '</div>';
 
   if (visiblePersons.length === 0) {
@@ -2038,10 +2080,11 @@ function renderDuplicates() {
       const gKey = `exact_${gi}`;
       const isIgnored = IGNORED_GROUPS.has(gKey);
       const keeper = DUP_KEEPERS[gKey] || group.keep;
-      const uniqueFiles = [...new Set([keeper, ...group.duplicates])];
-      if (!uniqueFiles.includes(group.keep) && group.keep !== keeper) {
-        uniqueFiles.push(group.keep);
-      }
+      // Deduplicate: gather all files (original keep + duplicates), then dedupe by path
+      const allPaths = [group.keep, ...group.duplicates];
+      const uniqueFiles = [...new Set(allPaths)];
+      // Ensure the current keeper is always in the list
+      if (!uniqueFiles.includes(keeper)) uniqueFiles.unshift(keeper);
       const suggested = pickSuggestedBest(uniqueFiles);
 
       html += `<div class="dup-group ${isIgnored ? 'ignored' : ''}">`;
@@ -2053,6 +2096,7 @@ function renderDuplicates() {
 
       uniqueFiles.forEach(rel => {
         const f = getFileByRel(rel);
+        if (!f) return; // Skip entries with no matching file data
         const isKeeper = rel === keeper;
         const isSuggested = rel === suggested && suggested !== keeper;
         html += renderDupRow(rel, f, isKeeper, gKey, null, isSuggested);
@@ -2071,23 +2115,31 @@ function renderDuplicates() {
       const isIgnored = IGNORED_GROUPS.has(gKey);
       const keeper = DUP_KEEPERS[gKey] || group.keep;
       const members = group.members || [];
-      const allRels = members.map(m => m.rel_path);
+      // Deduplicate members by rel_path
+      const seenPaths = new Set();
+      const uniqueMembers = members.filter(m => {
+        if (seenPaths.has(m.rel_path)) return false;
+        seenPaths.add(m.rel_path);
+        return true;
+      });
+      const allRels = uniqueMembers.map(m => m.rel_path);
       const suggested = pickSuggestedBest(allRels);
       // Group-level similarity: average of non-zero distances
-      const dists = members.map(m => m.distance).filter(d => d > 0);
+      const dists = uniqueMembers.map(m => m.distance).filter(d => d > 0);
       const avgSim = dists.length > 0
         ? distanceToSimilarity(Math.round(dists.reduce((a,b) => a+b, 0) / dists.length))
         : 100;
 
       html += `<div class="dup-group ${isIgnored ? 'ignored' : ''}">`;
       html += `<div class="dup-group-header">`;
-      html += `<span class="group-title" onclick="toggleGroup('${gKey}')" style="cursor:pointer;flex:1;">Group ${gi + 1} — ${members.length} files · ~${avgSim}% similar</span>`;
+      html += `<span class="group-title" onclick="toggleGroup('${gKey}')" style="cursor:pointer;flex:1;">Group ${gi + 1} — ${uniqueMembers.length} files · ~${avgSim}% similar</span>`;
       html += `<button class="btn-ignore ${isIgnored ? 'active' : ''}" onclick="toggleIgnore('${gKey}')">${isIgnored ? 'Unignore' : 'Ignore'}</button>`;
       html += '</div>';
       html += `<div class="dup-group-body" id="group_${gKey}" ${isIgnored ? 'style="display:none"' : ''}>`;
 
-      members.forEach(m => {
+      uniqueMembers.forEach(m => {
         const f = getFileByRel(m.rel_path);
+        if (!f) return; // Skip entries with no matching file data
         const isKeeper = m.rel_path === keeper;
         const isSuggested = m.rel_path === suggested && suggested !== keeper;
         html += renderDupRow(m.rel_path, f, isKeeper, gKey, m.distance, isSuggested);

@@ -318,6 +318,32 @@ ipcMain.handle('scan-folder', async (event, folderPath) => {
   return result;
 });
 
+// Quick scan — metadata only, no faces/duplicates (instant gallery load)
+ipcMain.handle('scan-folder-quick', async (event, folderPath) => {
+  const result = await spawnScanner(folderPath, ['--quick']);
+  hideCacheFolder(folderPath);
+  return result;
+});
+
+// Full background scan — faces + duplicates + quality (runs after gallery is visible)
+ipcMain.handle('scan-folder-full', async (event, folderPath) => {
+  const result = await spawnScanner(folderPath, []);
+  return result;
+});
+
+// List subfolders for folder suggestions
+ipcMain.handle('list-subfolders', async (event, folderPath) => {
+  try {
+    const entries = fs.readdirSync(folderPath, { withFileTypes: true });
+    return entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== '__duplicates__' && e.name !== 'node_modules')
+      .map(e => e.name)
+      .sort();
+  } catch (_) {
+    return [];
+  }
+});
+
 function hideCacheFolder(folderPath) {
   if (process.platform !== 'win32') return;
   const cacheDir = path.join(folderPath, '.cache');
