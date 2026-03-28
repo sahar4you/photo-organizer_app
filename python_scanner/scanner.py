@@ -3,7 +3,7 @@
 Photo Scanner — scans folder, extracts EXIF + face data, outputs JSON.
 Usage: python3 scanner.py /path/to/folder [--json] [--quick]
 """
-import os, sys, json, base64, hashlib, multiprocessing
+import os, sys, json, base64, hashlib, multiprocessing, time
 from datetime import datetime
 from pathlib import Path
 from io import BytesIO
@@ -607,6 +607,8 @@ DUPLICATES_DIR = "__duplicates__"
 CACHE_VERSION = "v4"
 
 # ---- Multiprocessing face detection worker ----
+_stop_flag = False
+
 def _process_face_batch(args):
     """Worker function for parallel face detection. Runs in subprocess."""
     filepaths, cascade_path, profile_path = args
@@ -627,6 +629,37 @@ def _process_face_batch(args):
         for filepath in filepaths:
             results.append((filepath, [], [], []))
     return results
+
+# ---- Camera name normalization ----
+_CAMERA_BRANDS = {
+    'samsung': 'Samsung', 'apple': 'Apple', 'huawei': 'Huawei',
+    'xiaomi': 'Xiaomi', 'oppo': 'OPPO', 'vivo': 'Vivo', 'oneplus': 'OnePlus',
+    'google': 'Google', 'sony': 'Sony', 'canon': 'Canon', 'nikon': 'Nikon',
+    'fujifilm': 'Fujifilm', 'panasonic': 'Panasonic', 'olympus': 'Olympus',
+    'leica': 'Leica', 'gopro': 'GoPro', 'dji': 'DJI', 'lg': 'LG',
+    'motorola': 'Motorola', 'nokia': 'Nokia', 'realme': 'Realme',
+}
+
+def normalize_camera_name(make, model):
+    """Normalize camera make/model to consistent capitalization."""
+    make = (make or '').strip()
+    model = (model or '').strip()
+    # Normalize make
+    make_lower = make.lower()
+    for key, proper in _CAMERA_BRANDS.items():
+        if key in make_lower:
+            make = proper
+            break
+    else:
+        if make:
+            make = make.title()
+    # Build display name
+    if model:
+        # Remove make from model if duplicated (e.g. "Samsung SM-G998B" → "SM-G998B")
+        if model.lower().startswith(make.lower()):
+            model = model[len(make):].strip()
+        return f"{make} {model}".strip() if make else model
+    return make or "Unknown"
 
 def _collect_media_files(folder):
     """Recursively collect all media files under folder, skipping __duplicates__/.
@@ -721,7 +754,7 @@ def scan_folder(folder):
             date_taken = get_date_from_exif(exif)
             camera_make = str(exif.get('Make','')).strip()
             camera_model = str(exif.get('Model','')).strip()
-            camera = f"{camera_make} {camera_model}".strip() if camera_model else camera_make
+            camera = normalize_camera_name(camera_make, camera_model)
             # ISO
             try:
                 iso_val = exif.get('ISOSpeedRatings')
@@ -873,9 +906,10 @@ def scan_folder(folder):
         cascade_p = cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml' if face_cascade is not None else None
         profile_p = cv2.data.haarcascades + 'haarcascade_profileface.xml' if profile_cascade is not None else None
 
-        # Batch files for workers (8 per batch)
-        batch_size = 8
-        num_workers = min(4, max(1, multiprocessing.cpu_count() - 1))
+        # Dynamic worker count + batch size
+        batch_size = 6
+        num_workers = min(6, max(1, (os.cpu_count() or 2) - 1))
+        log_info(f"Face detection: {num_workers} workers, {len(image_files)} images")
 
         # Build lookup: filepath -> file_idx
         path_to_idx = {fp: idx for idx, fp in image_files}
@@ -889,6 +923,10 @@ def scan_folder(folder):
                 futures = {executor.submit(_process_face_batch, batch): batch for batch in batches}
                 done_count = 0
                 for future in as_completed(futures):
+                    if _stop_flag:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        log_info("Face detection stopped by user")
+                        break
                     done_count += 1
                     try:
                         results = future.result(timeout=120)
@@ -905,10 +943,14 @@ def scan_folder(folder):
                         log_debug(f"Face batch failed: {e}")
                     pct = int(done_count / len(batches) * 100)
                     emit_progress(pct, done_count * batch_size, len(image_files), "detecting faces")
+                    # CPU throttle: brief yield between batch completions
+                    time.sleep(0.01)
         except Exception as e:
             log_error(f"Multiprocessing face detection failed, falling back to serial: {e}")
             # Serial fallback
             for file_idx, filepath in image_files:
+                if _stop_flag:
+                    break
                 rects, embeddings = detect_faces_cv(filepath, face_cascade, profile_cascade)
                 face_thumbs = extract_face_thumbs_cv(filepath, rects) if rects else []
                 files[file_idx]["face_count"] = len(rects)
@@ -1047,7 +1089,7 @@ if __name__ == "__main__":
                 date_taken = get_date_from_exif(exif)
                 camera_make = str(exif.get('Make','')).strip()
                 camera_model = str(exif.get('Model','')).strip()
-                camera = f"{camera_make} {camera_model}".strip() if camera_model else camera_make
+                camera = normalize_camera_name(camera_make, camera_model)
                 # Quick resolution via PIL
                 if HAS_PIL:
                     try:

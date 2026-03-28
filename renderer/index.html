@@ -369,6 +369,13 @@
         <div class="tag-filter-chips" id="tagChips"></div>
       </div>
       <div class="filter-group">
+        <label>📁 Folder</label>
+        <select id="filterFolder">
+          <option value="">All Folders</option>
+          <option value="__root__">Root Only</option>
+        </select>
+      </div>
+      <div class="filter-group">
         <label>Quality</label>
         <select id="filterQuality">
           <option value="">All Quality</option>
@@ -487,6 +494,7 @@
   <div class="lb-main">
     <div class="lb-toolbar">
       <button onclick="toggleLbPanel()" title="Toggle info panel">i</button>
+      <button onclick="toggleLbZoom()" title="Toggle Fit/Original" id="lbZoomBtn">⛶</button>
       <button onclick="deleteLightboxFile()" title="Delete file" style="color:#ff5252;">🗑</button>
       <button onclick="closeLightbox()" title="Close">×</button>
     </div>
@@ -872,8 +880,15 @@ function populateFilters() {
   const months = [...new Set(DATA.map(f => f.month))].sort().reverse();
   const cameras = [...new Set(DATA.map(f => f.camera))].sort();
 
+  // Subfolder list (unique parent dirs)
+  const folders = [...new Set(DATA.map(f => {
+    const parts = f.rel_path.split(/[\\/]/);
+    return parts.length > 1 ? parts[0] : null;
+  }).filter(Boolean))].sort();
+
   fillSelect('filterMonth', months);
   fillSelect('filterCamera', cameras);
+  fillSelect('filterFolder', folders);
   refreshFaceUI();
   refreshTagUI();
 }
@@ -881,28 +896,29 @@ function populateFilters() {
 function fillSelect(id, values) {
   const sel = document.getElementById(id);
   // Keep first options (All Dates, etc.)
-  const keepCount = id === 'filterFace' ? 4 : 1;
+  const keepCount = id === 'filterFace' ? 4 : id === 'filterFolder' ? 2 : 1;
   while (sel.options.length > keepCount) sel.remove(keepCount);
   values.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
 }
 
 function refreshFaceUI() {
-  const persons = [...new Set(DATA.flatMap(f => f.faces || []))].filter(p => p !== 'Unknown').sort((a,b) => {
-    const na = parseInt(a.replace('Person ','')) || 0;
-    const nb = parseInt(b.replace('Person ','')) || 0;
-    if (na && nb) return na - nb;
-    return a.localeCompare(b);
-  });
+  // Don't populate individual face options in gallery filter dropdown anymore
+  // Gallery has: All Photos, ★ Kept Faces, Has Faces, No Faces
 
-  fillSelect('filterFace', persons);
-
+  // Face avatars: show ONLY kept faces (not all 50+)
   const avatarDiv = document.getElementById('faceAvatars');
   avatarDiv.innerHTML = '';
-  persons.forEach(p => {
+  const keptPersons = [...KEPT_FACES].sort();
+  if (keptPersons.length === 0) {
+    avatarDiv.style.display = 'none';
+    return;
+  }
+  avatarDiv.style.display = '';
+  keptPersons.forEach(p => {
     const chip = document.createElement('div');
     chip.className = 'face-chip';
-    chip.title = p;
-    chip.onclick = () => { document.getElementById('filterFace').value = p; applyFilters(); };
+    chip.title = `Filter by ${p}`;
+    chip.onclick = () => { document.getElementById('filterFace').value = '__kept_faces__'; applyFilters(); };
     const thumb = PERSON_THUMBS[p];
     const label = p.startsWith('Person ') ? p.replace('Person ','') : p;
     if (thumb) {
@@ -922,6 +938,7 @@ function applyFilters() {
   const res = document.getElementById('filterRes').value;
   const face = document.getElementById('filterFace').value;
   const tag = document.getElementById('filterTag').value;
+  const folder = document.getElementById('filterFolder').value;
   const quality = document.getElementById('filterQuality').value;
   const sort = document.getElementById('sortBy').value;
 
@@ -945,6 +962,12 @@ function applyFilters() {
     if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
     if (tag === '__no_tag__' && f.tags && f.tags.length > 0) return false;
     if (tag && tag !== '__has_tag__' && tag !== '__no_tag__' && (!f.tags || !f.tags.includes(tag))) return false;
+    if (folder === '__root__') {
+      if (f.rel_path.includes('/') || f.rel_path.includes('\\')) return false;
+    } else if (folder) {
+      const topDir = f.rel_path.split(/[\\/]/)[0];
+      if (topDir !== folder) return false;
+    }
     if (quality === 'good' && (f.quality_score == null || f.quality_score < 25)) return false;
     if (quality === 'better' && (f.quality_score == null || f.quality_score < 50)) return false;
     if (quality === 'best' && (f.quality_score == null || f.quality_score < 75)) return false;
@@ -1225,10 +1248,28 @@ function initLazyThumbs() {
 
 // ---- Lightbox ----
 let lbPanelVisible = true;
+let lbZoomFit = true; // true = fit to screen, false = original size
 
 function toggleLbPanel() {
   lbPanelVisible = !lbPanelVisible;
   document.getElementById('lbSide').classList.toggle('hidden', !lbPanelVisible);
+}
+
+function toggleLbZoom() {
+  lbZoomFit = !lbZoomFit;
+  const img = document.querySelector('#lbMedia img');
+  if (!img) return;
+  if (lbZoomFit) {
+    img.style.maxWidth = '100%';
+    img.style.maxHeight = '85vh';
+    img.style.cursor = 'zoom-in';
+    document.getElementById('lbZoomBtn').title = 'View Original Size';
+  } else {
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
+    img.style.cursor = 'zoom-out';
+    document.getElementById('lbZoomBtn').title = 'Fit to Screen';
+  }
 }
 
 async function openLightbox(idx) {
@@ -1244,13 +1285,17 @@ async function openLightbox(idx) {
     media.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:300px;"><div class="spinner" style="width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;"></div></div>';
     const dataUrl = await window.api.readImage(f.path);
     if (dataUrl) {
-      media.innerHTML = `<img src="${dataUrl}" style="max-width:100%;max-height:85vh;">`;
+      media.innerHTML = `<img src="${dataUrl}" style="max-width:100%;max-height:85vh;cursor:zoom-in;" onclick="toggleLbZoom()">`;
     } else {
       media.innerHTML = `<div style="color:var(--text2);padding:40px;">Could not load image</div>`;
     }
   }
 
-  document.getElementById('lbName').textContent = f.name;
+  const lbNameParts = [f.name];
+  if (f.resolution && f.resolution !== 'Unknown') lbNameParts.push(f.resolution);
+  if (f.size_mb) lbNameParts.push(`${f.size_mb} MB`);
+  document.getElementById('lbName').textContent = lbNameParts.join(' · ');
+  lbZoomFit = true; // Reset zoom on navigation
 
   // Build side panel
   let side = '';
@@ -1528,7 +1573,7 @@ function setGridSize(size) {
 }
 
 function resetFilters() {
-  ['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterQuality'].forEach(id => {
+  ['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterFolder','filterQuality'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('sortBy').value = 'date_desc';
@@ -1536,7 +1581,7 @@ function resetFilters() {
 }
 
 // Attach filter events
-['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterQuality','sortBy'].forEach(id => {
+['searchBox','filterMonth','filterType','filterCamera','filterRes','filterFace','filterTag','filterFolder','filterQuality','sortBy'].forEach(id => {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('change', applyFilters);
 });
@@ -1609,7 +1654,8 @@ function updateTagSelCount() {
 
 async function addTagToSelected() {
   const input = document.getElementById('tagInput');
-  const tag = input.value.trim().toLowerCase();
+  const rawTag = input.value.trim();
+  const tag = rawTag.charAt(0).toUpperCase() + rawTag.slice(1).toLowerCase(); // Normalize: "test" → "Test"
   if (!tag || SELECTED_PHOTOS.size === 0) return;
 
   SELECTED_PHOTOS.forEach(rel => {
@@ -1725,9 +1771,12 @@ async function moveTaggedToFolder() {
   try { subfolders = await window.api.listSubfolders(currentFolder); } catch (_) {}
 
   let listHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be moved.</p>`;
+  listHtml += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
+  listHtml += '<button onclick="document.getElementById(\'moveTargetFolder\').value=\'.\'" style="font-size:11px;padding:3px 10px;background:var(--card);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer;">Move to Root</button>';
+  listHtml += '</div>';
   listHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Target subfolder name:</label>';
   listHtml += '<div style="position:relative;">';
-  listHtml += '<input type="text" id="moveTargetFolder" autocomplete="off" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. favorites" oninput="filterFolderSuggestions()" onfocus="filterFolderSuggestions()">';
+  listHtml += '<input type="text" id="moveTargetFolder" autocomplete="off" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;" placeholder="e.g. favorites (or . for root)" oninput="filterFolderSuggestions()" onfocus="filterFolderSuggestions()">';
   listHtml += '<div id="folderSuggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:0 0 6px 6px;max-height:120px;overflow-y:auto;z-index:10;"></div>';
   listHtml += '</div>';
   if (subfolders.length > 0) {
