@@ -115,6 +115,9 @@
   /* Badge spinner (in tab bar) */
   .badge-spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-left:4px; vertical-align:middle; }
 
+  /* Filter result count */
+  .filter-count { margin-left:auto; font-size:11px; color:var(--text2); padding:4px 10px; white-space:nowrap; }
+
   /* Face keep badge */
   .face-card.kept { border:2px solid var(--accent); box-shadow:0 0 8px rgba(0,200,255,0.15); }
   .face-keep-badge { position:absolute; top:4px; right:4px; background:var(--accent); color:#000; font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px; }
@@ -424,6 +427,9 @@
       <button class="reset-btn" onclick="clearCache()" style="color:var(--danger);border-color:var(--danger);">Clear Cache</button>
       <button class="reset-btn" onclick="openHelp()">Help / About</button>
     </div>
+    <div style="padding:10px 16px;font-size:9px;color:var(--text2);text-align:center;opacity:0.6;border-top:1px solid var(--border);margin-top:auto;">
+      Developed by <b>INDIATECH247</b><br>Photo Organizer v1.0
+    </div>
   </aside>
 
   <!-- Main -->
@@ -438,6 +444,7 @@
       <button class="active" onclick="switchTab('gallery')">Gallery</button>
       <button onclick="switchTab('duplicates')">Duplicates <span class="dup-badge" id="dupBadge" style="display:none;">0</span></button>
       <button onclick="switchTab('faces')">Faces <span class="dup-badge" id="facesBadge" style="display:none;">0</span></button>
+      <span class="filter-count" id="filterCount" style="display:none;"></span>
     </div>
     <div class="tag-bar" id="tagBar">
       <span class="sel-count" id="tagSelCount">0 selected</span>
@@ -510,7 +517,7 @@
 <div class="modal-overlay" id="helpModal">
   <div class="modal" style="width:520px;max-height:85vh;">
     <h3>Photo Organizer — Help</h3>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Version 1.1.0</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Version 1.0 — Developed by INDIATECH247</div>
     <p style="font-size:12px;margin-bottom:14px;line-height:1.6;">
       A portable desktop photo organizer with face detection, duplicate detection,
       tagging, quality scoring, and export features. No internet required.
@@ -962,19 +969,36 @@ function fillSelect(id, values) {
 }
 
 function refreshFaceUI() {
+  const sel = document.getElementById('filterFace');
+  // Remove old dynamic options (everything after the 4 fixed options)
+  while (sel.options.length > 4) sel.remove(4);
+
   // Show/hide "★ Kept Faces" option based on whether any faces are kept
-  const keptOption = document.querySelector('#filterFace option[value="__kept_faces__"]');
+  const keptOption = sel.querySelector('option[value="__kept_faces__"]');
   if (keptOption) {
     keptOption.style.display = KEPT_FACES.size > 0 ? '' : 'none';
-    if (KEPT_FACES.size === 0 && document.getElementById('filterFace').value === '__kept_faces__') {
-      document.getElementById('filterFace').value = '';
-    }
+    if (KEPT_FACES.size === 0 && sel.value === '__kept_faces__') sel.value = '';
   }
 
-  // Face avatars: show ONLY kept faces (not all 50+)
+  // Add individual kept faces as filter options
+  const keptPersons = [...KEPT_FACES].sort();
+  if (keptPersons.length > 0) {
+    const sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '── Kept Faces ──';
+    sep.style.color = 'var(--text2)';
+    sel.appendChild(sep);
+    keptPersons.forEach(p => {
+      const o = document.createElement('option');
+      o.value = `__person__${p}`;
+      o.textContent = `  ${p}`;
+      sel.appendChild(o);
+    });
+  }
+
+  // Face avatars: show ONLY kept faces
   const avatarDiv = document.getElementById('faceAvatars');
   avatarDiv.innerHTML = '';
-  const keptPersons = [...KEPT_FACES].sort();
   if (keptPersons.length === 0) {
     avatarDiv.style.display = 'none';
     return;
@@ -983,8 +1007,8 @@ function refreshFaceUI() {
   keptPersons.forEach(p => {
     const chip = document.createElement('div');
     chip.className = 'face-chip';
-    chip.title = `Filter by ${p}`;
-    chip.onclick = () => { document.getElementById('filterFace').value = '__kept_faces__'; applyFilters(); };
+    chip.title = `Filter: ${p}`;
+    chip.onclick = () => { sel.value = `__person__${p}`; galleryFacePersonFilter = ''; if (activeTab !== 'gallery') switchTab('gallery'); applyFilters(); };
     const thumb = PERSON_THUMBS[p];
     const label = p.startsWith('Person ') ? p.replace('Person ','') : p;
     if (thumb) {
@@ -1022,9 +1046,11 @@ function applyFilters() {
     if (face === '__kept_faces__') {
       if (!f.faces || f.faces.length === 0) return false;
       if (!f.faces.some(p => KEPT_FACES.has(p))) return false;
+    } else if (face.startsWith('__person__')) {
+      const personName = face.slice(10); // "__person__".length === 10
+      if (!f.faces || !f.faces.includes(personName)) return false;
     } else if (face === '__has_face__') {
       if (!f.faces || f.faces.length === 0) return false;
-      // If a specific person is selected from Faces tab, filter to that person
       if (galleryFacePersonFilter && !f.faces.includes(galleryFacePersonFilter)) return false;
     } else if (face === '__no_face__' && f.faces && f.faces.length > 0) return false;
     if (tag === '__has_tag__' && (!f.tags || f.tags.length === 0)) return false;
@@ -1055,6 +1081,20 @@ function applyFilters() {
     if (sort === 'size_asc') return a.size_bytes - b.size_bytes;
     return 0;
   });
+
+  // Update filter count display
+  const fc = document.getElementById('filterCount');
+  if (fc) {
+    if (filtered.length < DATA.length) {
+      fc.textContent = `Showing ${filtered.length} / ${DATA.length}`;
+      fc.style.display = '';
+    } else if (DATA.length > 0) {
+      fc.textContent = `${DATA.length} photos`;
+      fc.style.display = '';
+    } else {
+      fc.style.display = 'none';
+    }
+  }
 
   render();
 }
@@ -1316,7 +1356,10 @@ function initLazyThumbs() {
 
 // ---- Lightbox ----
 let lbPanelVisible = true;
-let lbZoomFit = true; // true = fit to screen, false = original size
+let lbZoomFit = true; // true = fit to screen, false = zoomed
+let lbZoomLevel = 1;
+let lbPanX = 0, lbPanY = 0;
+let lbDragging = false, lbDragStartX = 0, lbDragStartY = 0;
 
 function toggleLbPanel() {
   lbPanelVisible = !lbPanelVisible;
@@ -1324,21 +1367,91 @@ function toggleLbPanel() {
 }
 
 function toggleLbZoom() {
-  lbZoomFit = !lbZoomFit;
+  if (lbZoomFit) {
+    // Switch to zoom mode
+    lbZoomFit = false;
+    lbZoomLevel = 2;
+    lbPanX = 0; lbPanY = 0;
+  } else {
+    // Reset to fit mode
+    lbZoomFit = true;
+    lbZoomLevel = 1;
+    lbPanX = 0; lbPanY = 0;
+  }
+  applyLbZoom();
+}
+
+function applyLbZoom() {
   const img = document.querySelector('#lbMedia img');
   if (!img) return;
   if (lbZoomFit) {
     img.style.maxWidth = '100%';
     img.style.maxHeight = '85vh';
+    img.style.transform = '';
     img.style.cursor = 'zoom-in';
-    document.getElementById('lbZoomBtn').title = 'View Original Size';
+    img.style.transformOrigin = '';
+    document.getElementById('lbZoomBtn').title = 'Zoom In';
   } else {
     img.style.maxWidth = 'none';
     img.style.maxHeight = 'none';
-    img.style.cursor = 'zoom-out';
-    document.getElementById('lbZoomBtn').title = 'Fit to Screen';
+    img.style.transform = `scale(${lbZoomLevel}) translate(${lbPanX}px, ${lbPanY}px)`;
+    img.style.transformOrigin = 'center center';
+    img.style.cursor = lbZoomLevel > 1 ? 'grab' : 'zoom-in';
+    document.getElementById('lbZoomBtn').title = `${Math.round(lbZoomLevel * 100)}% — Click to reset`;
   }
 }
+
+function initLbZoomHandlers() {
+  const media = document.getElementById('lbMedia');
+  // Scroll to zoom
+  media.addEventListener('wheel', (e) => {
+    if (lbZoomFit) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.2 : 0.2;
+    lbZoomLevel = Math.max(0.5, Math.min(8, lbZoomLevel + delta));
+    if (lbZoomLevel <= 1.05 && lbZoomLevel >= 0.95) { lbZoomLevel = 1; lbPanX = 0; lbPanY = 0; }
+    applyLbZoom();
+  }, { passive: false });
+  // Drag to pan
+  media.addEventListener('mousedown', (e) => {
+    if (lbZoomFit || lbZoomLevel <= 1) return;
+    lbDragging = true;
+    lbDragStartX = e.clientX - lbPanX;
+    lbDragStartY = e.clientY - lbPanY;
+    const img = media.querySelector('img');
+    if (img) img.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+  media.addEventListener('mousemove', (e) => {
+    if (!lbDragging) return;
+    lbPanX = e.clientX - lbDragStartX;
+    lbPanY = e.clientY - lbDragStartY;
+    applyLbZoom();
+  });
+  media.addEventListener('mouseup', () => {
+    lbDragging = false;
+    const img = media.querySelector('img');
+    if (img && !lbZoomFit) img.style.cursor = lbZoomLevel > 1 ? 'grab' : 'zoom-in';
+  });
+  media.addEventListener('mouseleave', () => { lbDragging = false; });
+  // Double-click to zoom into point
+  media.addEventListener('dblclick', (e) => {
+    if (lbZoomFit) {
+      lbZoomFit = false;
+      lbZoomLevel = 3;
+      lbPanX = 0; lbPanY = 0;
+    } else if (lbZoomLevel > 1) {
+      lbZoomFit = true;
+      lbZoomLevel = 1;
+      lbPanX = 0; lbPanY = 0;
+    } else {
+      lbZoomLevel = 3;
+    }
+    applyLbZoom();
+  });
+}
+// Initialize zoom handlers once
+document.addEventListener('DOMContentLoaded', initLbZoomHandlers);
 
 async function openLightbox(idx) {
   currentLbIndex = idx;
@@ -1363,7 +1476,7 @@ async function openLightbox(idx) {
   if (f.resolution && f.resolution !== 'Unknown') lbNameParts.push(f.resolution);
   if (f.size_mb) lbNameParts.push(`${f.size_mb} MB`);
   document.getElementById('lbName').textContent = lbNameParts.join(' · ');
-  lbZoomFit = true; // Reset zoom on navigation
+  lbZoomFit = true; lbZoomLevel = 1; lbPanX = 0; lbPanY = 0; // Reset zoom on navigation
 
   // Build side panel
   let side = '';

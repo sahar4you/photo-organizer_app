@@ -87,7 +87,7 @@ function ensurePythonDeps() {
 
     proc.on('close', (code) => {
       if (code === 0) {
-        console.log('[SETUP] Python dependencies verified successfully');
+        devLog('[SETUP] Python dependencies verified successfully');
         pythonDepsReady = true;
         resolve(true);
       } else {
@@ -122,7 +122,7 @@ function createWindow() {
 app.whenReady().then(async () => {
   // Bootstrap Python dependencies before creating the window
   if (isDev()) {
-    console.log('[SETUP] Checking Python dependencies...');
+    devLog('[SETUP] Checking Python dependencies...');
     await ensurePythonDeps();
   }
   createWindow();
@@ -134,6 +134,11 @@ app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) creat
 
 function isDev() {
   return !app.isPackaged;
+}
+
+// Production-safe logging: only in dev mode
+function devLog(...args) {
+  if (isDev()) console.log(...args);
 }
 
 function getScannerCommand(folderPath, extraArgs) {
@@ -163,7 +168,7 @@ function getScannerCommand(folderPath, extraArgs) {
 async function spawnScanner(folderPath, extraArgs) {
   // Runtime fallback: ensure Python deps are installed before scanning
   if (isDev() && !pythonDepsReady) {
-    console.log('[SETUP] Runtime fallback — re-checking Python dependencies...');
+    devLog('[SETUP] Runtime fallback — re-checking Python dependencies...');
     await ensurePythonDeps();
   }
 
@@ -214,14 +219,11 @@ async function spawnScanner(folderPath, extraArgs) {
       text.split('\n').forEach(line => {
         const trimmed = line.trim();
         if (!trimmed) return;
-        // Always show INFO and ERROR, suppress DEBUG in production
+        // Production: only show errors. Dev: show INFO + ERROR
         if (trimmed.startsWith('[DEBUG]')) return;
-        if (trimmed.startsWith('[INFO]')) {
-          console.log('[PYTHON]', trimmed);
-        } else if (trimmed.startsWith('[ERROR]')) {
+        if (trimmed.startsWith('[ERROR]')) {
           console.error('[PYTHON]', trimmed);
-        } else {
-          // Legacy/untagged lines — show as info
+        } else if (isDev()) {
           console.log('[PYTHON]', trimmed);
         }
       });
@@ -352,7 +354,7 @@ ipcMain.handle('stop-scan', async () => {
   if (activeScanProcess) {
     try {
       activeScanProcess.kill('SIGTERM');
-      console.log('[SCAN] Scan process terminated by user');
+      devLog('[SCAN] Scan process terminated by user');
     } catch (_) {}
     activeScanProcess = null;
     return { status: 'stopped' };
@@ -375,10 +377,10 @@ ipcMain.handle('load-scan-cache', async (event, folderPath) => {
     // Build current signature from folder contents
     const currentSig = buildFolderSignature(folderPath);
     if (cache.signature !== currentSig) {
-      console.log('[CACHE] Scan cache stale (folder changed)');
+      devLog('[CACHE] Scan cache stale (folder changed)');
       return null;
     }
-    console.log('[CACHE] Scan cache hit — instant load');
+    devLog('[CACHE] Scan cache hit — instant load');
     return cache.result;
   } catch (_) {
     return null;
@@ -393,7 +395,7 @@ ipcMain.handle('save-scan-cache', async (event, folderPath, result) => {
     const signature = buildFolderSignature(folderPath);
     // Strip large fields (thumbs already stripped in renderer, person_thumbs kept small)
     fs.writeFileSync(cachePath, JSON.stringify({ signature, result }, null, 0), 'utf8');
-    console.log('[CACHE] Scan result saved');
+    devLog('[CACHE] Scan result saved');
   } catch (_) {}
 });
 
