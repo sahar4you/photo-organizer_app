@@ -102,6 +102,33 @@
   .progress-bar-track { width:260px; height:6px; background:var(--border); border-radius:3px; margin-top:12px; overflow:hidden; }
   .progress-bar-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s; width:0%; }
 
+  /* Tab inline progress */
+  .tab-progress { padding:12px 24px; display:none; }
+  .tab-progress.active { display:flex; align-items:center; gap:12px; }
+  .tab-progress .tp-bar { flex:1; max-width:320px; height:6px; background:var(--border); border-radius:3px; overflow:hidden; }
+  .tab-progress .tp-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s; width:0%; }
+  .tab-progress .tp-text { font-size:12px; color:var(--text2); white-space:nowrap; }
+  .tab-progress .tp-spinner { width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; flex-shrink:0; }
+
+  /* Badge spinner (in tab bar) */
+  .badge-spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-left:4px; vertical-align:middle; }
+
+  /* Face keep badge */
+  .face-card.kept { border:2px solid var(--accent); box-shadow:0 0 8px rgba(0,200,255,0.15); }
+  .face-keep-badge { position:absolute; top:4px; right:4px; background:var(--accent); color:#000; font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px; }
+  .face-card { position:relative; }
+  .face-keep-btn { font-size:10px; background:none; border:1px solid var(--border); color:var(--text2); border-radius:4px; padding:2px 6px; cursor:pointer; margin-top:4px; }
+  .face-keep-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .face-keep-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
+
+  /* Face filter bar */
+  .face-filter-bar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .face-filter-bar select { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:12px; }
+
+  /* Bulk delete button */
+  .btn-tag-delete { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
+  .btn-tag-delete:hover { background:var(--danger); color:#fff; }
+
   /* Welcome screen */
   .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; color:var(--text2); }
   .welcome h2 { font-size:28px; color:var(--text); margin-bottom:12px; }
@@ -410,11 +437,16 @@
       <button class="btn-tag-remove" onclick="removeTagFromSelected()">- Remove Tag</button>
       <button class="btn-tag-move" onclick="moveTaggedToFolder()">Move to Folder</button>
       <button class="btn-tag-add" onclick="exportSelected()">Export</button>
+      <button class="btn-tag-delete" onclick="bulkDeleteSelected()">Delete</button>
       <button class="btn-tag-cancel" onclick="exitSelectMode()">Done</button>
     </div>
     <div class="gallery" id="gallery" style="display:none;"></div>
-    <div class="dup-panel" id="dupPanel"></div>
-    <div class="faces-panel" id="facesPanel"></div>
+    <div class="dup-panel" id="dupPanel">
+      <div class="tab-progress" id="dupProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="dupProgressFill"></div></div><div class="tp-text" id="dupProgressText">Detecting duplicates...</div></div>
+    </div>
+    <div class="faces-panel" id="facesPanel">
+      <div class="tab-progress" id="facesProgress"><div class="tp-spinner"></div><div class="tp-bar"><div class="tp-fill" id="facesProgressFill"></div></div><div class="tp-text" id="facesProgressText">Processing faces...</div></div>
+    </div>
   </main>
 </div>
 
@@ -516,6 +548,9 @@ let TAGS_MAP = {};        // { rel_path: [tag1, tag2] }
 let selectMode = false;   // multi-select mode
 let SELECTED_PHOTOS = new Set(); // rel_paths of selected photos
 let showFolderName = localStorage.getItem('showFolderName') !== 'false'; // default: true
+let KEPT_FACES = new Set(); // person names marked as "kept"
+let faceFilterMode = 'all'; // 'all' | 'kept'
+let scanInProgress = false;
 
 // ---- Electron-native dialog helpers (NO browser alert/confirm/prompt) ----
 async function showMsg(message, detail, type = 'info') {
@@ -566,6 +601,76 @@ async function deleteLightboxFile() {
   } else if (result.status === 'error') {
     await showMsg('Delete failed', result.message, 'error');
   }
+}
+
+// ---- Bulk Delete from selection toolbar ----
+async function bulkDeleteSelected() {
+  if (SELECTED_PHOTOS.size === 0) { showMsg('No photos selected', 'Select photos first.'); return; }
+  const items = [...SELECTED_PHOTOS];
+  const ok = await showConfirmDialog(
+    `Delete ${items.length} file(s)?`,
+    `${items.length} file(s) will be sent to the recycle bin. You can restore them later.`,
+    'Delete'
+  );
+  if (!ok) return;
+  const paths = items.map(rel => {
+    const f = DATA.find(d => d.rel_path === rel);
+    return f ? f.path : currentFolder + '/' + rel;
+  });
+  document.getElementById('loadingOverlay').classList.add('open');
+  document.getElementById('progressText').textContent = 'Deleting files...';
+  try {
+    const results = await window.api.trashFiles(paths);
+    const trashed = results.filter(r => r.status === 'trashed').length;
+    // Remove from DATA in-place (no rescan)
+    const trashedRels = new Set(items.filter((rel, i) => results[i] && results[i].status === 'trashed'));
+    DATA = DATA.filter(d => !trashedRels.has(d.rel_path));
+    // Clean up face/dup data
+    if (DUP_GROUPS) {
+      for (const g of (DUP_GROUPS.exact || [])) g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+      for (const g of (DUP_GROUPS.near || [])) {
+        g.duplicates = g.duplicates.filter(d => !trashedRels.has(d));
+        g.members = (g.members || []).filter(m => !trashedRels.has(m.rel_path));
+      }
+    }
+    SELECTED_PHOTOS = new Set();
+    exitSelectMode();
+    populateFilters();
+    applyFilters();
+    updateDupBadge();
+    updateFacesBadge();
+    showMsg('Done', `${trashed} file(s) sent to recycle bin.`);
+  } catch (err) {
+    showMsg('Delete failed', err.message, 'error');
+  }
+  document.getElementById('loadingOverlay').classList.remove('open');
+}
+
+// ---- Scan progress helpers for tab indicators ----
+function showTabProgress(tab, text) {
+  const id = tab === 'faces' ? 'facesProgress' : 'dupProgress';
+  const el = document.getElementById(id);
+  if (el) { el.classList.add('active'); }
+  const textEl = document.getElementById(tab === 'faces' ? 'facesProgressText' : 'dupProgressText');
+  if (textEl) textEl.textContent = text;
+  // Show spinner in tab badge
+  const badgeId = tab === 'faces' ? 'facesBadge' : 'dupBadge';
+  const badge = document.getElementById(badgeId);
+  if (badge) { badge.innerHTML = '<span class="badge-spinner"></span>'; badge.style.display = 'inline'; }
+}
+
+function updateTabProgress(tab, pct, current, total, text) {
+  const fillId = tab === 'faces' ? 'facesProgressFill' : 'dupProgressFill';
+  const fill = document.getElementById(fillId);
+  if (fill) fill.style.width = pct + '%';
+  const textEl = document.getElementById(tab === 'faces' ? 'facesProgressText' : 'dupProgressText');
+  if (textEl) textEl.textContent = text || `${pct}% (${current} / ${total})`;
+}
+
+function hideTabProgress(tab) {
+  const id = tab === 'faces' ? 'facesProgress' : 'dupProgress';
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('active');
 }
 
 // ---- Folder History ----
@@ -624,22 +729,42 @@ async function rescan() {
 }
 
 async function scanCurrentFolder() {
+  scanInProgress = true;
   document.getElementById('loadingOverlay').classList.add('open');
   document.getElementById('progressText').textContent = 'Scanning photos...';
   document.getElementById('progressBarTrack').style.display = 'block';
   document.getElementById('progressBarFill').style.width = '0%';
 
+  // Show tab-level progress indicators
+  showTabProgress('faces', 'Processing faces...');
+  showTabProgress('duplicates', 'Detecting duplicates...');
+
   window.api.onScanProgressJson((msg) => {
     if (!msg || msg.value === undefined) return;
     document.getElementById('progressBarFill').style.width = msg.value + '%';
-    const statusMap = {
-      'scanning': `Scanning ${msg.total} files... ${msg.value}%`,
-      'clustering faces': 'Processing faces...',
-      'detecting duplicates': 'Detecting duplicates...',
-      'finalizing': 'Finalizing...',
-    };
-    document.getElementById('progressText').textContent =
-      statusMap[msg.status] || `Processing... ${msg.value}%`;
+    const pct = msg.value;
+    const cur = msg.current || 0;
+    const tot = msg.total || 0;
+
+    if (msg.status === 'scanning') {
+      const text = `Scanning ${pct}% (${cur} / ${tot} images)`;
+      document.getElementById('progressText').textContent = text;
+      updateTabProgress('faces', pct, cur, tot, `Scanning ${pct}% (${cur} / ${tot} images)`);
+      updateTabProgress('duplicates', pct, cur, tot, `Scanning ${pct}% (${cur} / ${tot} images)`);
+    } else if (msg.status === 'clustering faces') {
+      document.getElementById('progressText').textContent = 'Processing faces...';
+      updateTabProgress('faces', 100, tot, tot, 'Clustering faces...');
+    } else if (msg.status === 'detecting duplicates') {
+      document.getElementById('progressText').textContent = 'Detecting duplicates...';
+      updateTabProgress('duplicates', 100, tot, tot, 'Detecting duplicates...');
+      hideTabProgress('faces');
+    } else if (msg.status === 'finalizing') {
+      document.getElementById('progressText').textContent = 'Finalizing...';
+      hideTabProgress('faces');
+      hideTabProgress('duplicates');
+    } else {
+      document.getElementById('progressText').textContent = `Processing... ${pct}%`;
+    }
   });
 
   try {
@@ -661,6 +786,13 @@ async function scanCurrentFolder() {
       TAGS_MAP = await window.api.loadTags(currentFolder) || {};
     } catch (_) {
       TAGS_MAP = {};
+    }
+    // Load kept faces
+    try {
+      const kf = await window.api.loadFaceNames(currentFolder);
+      KEPT_FACES = new Set(Object.keys(kf).filter(k => kf[k] === '__kept__'));
+    } catch (_) {
+      KEPT_FACES = new Set();
     }
     // Apply tags from TAGS_MAP to DATA (in case scanner didn't have them)
     DATA.forEach(f => {
@@ -693,6 +825,9 @@ async function scanCurrentFolder() {
   } catch (err) {
     showMsg('Scan failed', err.message, 'error');
   }
+  scanInProgress = false;
+  hideTabProgress('faces');
+  hideTabProgress('duplicates');
   document.getElementById('loadingOverlay').classList.remove('open');
   document.getElementById('progressBarTrack').style.display = 'none';
 }
@@ -1565,7 +1700,21 @@ async function executeMoveTagged() {
   try {
     const results = await window.api.moveTaggedFiles(currentFolder, items, target);
     const moved = results.filter(r => r.status === 'moved').length;
-    await scanCurrentFolder();
+    // Update DATA in-place instead of full rescan
+    for (const r of results) {
+      if (r.status === 'moved') {
+        const entry = DATA.find(d => d.rel_path === r.source);
+        if (entry) {
+          entry.rel_path = r.destination;
+          entry.path = currentFolder + '/' + r.destination.replace(/\\/g, '/');
+          entry.name = r.destination.split(/[\\/]/).pop();
+        }
+      }
+    }
+    SELECTED_PHOTOS = new Set();
+    exitSelectMode();
+    populateFilters();
+    applyFilters();
     showMsg('Done', `${moved} file(s) moved to "${target}" folder.`);
   } catch (err) {
     showMsg('Move failed', err.message, 'error');
@@ -1673,15 +1822,13 @@ function updateFacesBadge() {
 
 function renderFacesPanel() {
   const panel = document.getElementById('facesPanel');
-  const persons = [...new Set(DATA.flatMap(f => f.faces || []))].filter(Boolean).sort((a, b) => {
-    const na = parseInt(a.replace('Person ', '')) || 0;
-    const nb = parseInt(b.replace('Person ', '')) || 0;
-    if (na && nb) return na - nb;
-    return a.localeCompare(b);
-  });
+  // Keep the progress bar if it's active
+  const progressHtml = document.getElementById('facesProgress')?.outerHTML || '';
 
-  if (persons.length === 0) {
-    panel.innerHTML = '<div class="no-dups"><div class="big-icon">👤</div><p>No faces detected.<br>Scan a folder with photos of people.</p></div>';
+  let allPersons = [...new Set(DATA.flatMap(f => f.faces || []))].filter(Boolean);
+
+  if (allPersons.length === 0) {
+    panel.innerHTML = progressHtml + '<div class="no-dups"><div class="big-icon">👤</div><p>No faces detected.<br>Scan a folder with photos of people.</p></div>';
     return;
   }
 
@@ -1689,24 +1836,86 @@ function renderFacesPanel() {
   const imgCount = {};
   DATA.forEach(f => (f.faces || []).forEach(p => { imgCount[p] = (imgCount[p] || 0) + 1; }));
 
-  let html = '<h3 style="font-size:14px;color:var(--accent);margin-bottom:16px;">Detected Faces</h3>';
+  // Sort: kept faces first, then by name
+  allPersons.sort((a, b) => {
+    const aKept = KEPT_FACES.has(a) ? 0 : 1;
+    const bKept = KEPT_FACES.has(b) ? 0 : 1;
+    if (aKept !== bKept) return aKept - bKept;
+    const na = parseInt(a.replace('Person ', '')) || 0;
+    const nb = parseInt(b.replace('Person ', '')) || 0;
+    if (na && nb) return na - nb;
+    return a.localeCompare(b);
+  });
+
+  // Apply filter
+  const visiblePersons = faceFilterMode === 'kept'
+    ? allPersons.filter(p => KEPT_FACES.has(p))
+    : allPersons;
+
+  let html = progressHtml;
+
+  // Filter bar
+  html += '<div class="face-filter-bar">';
+  html += '<h3 style="font-size:14px;color:var(--accent);margin:0;">Detected Faces</h3>';
+  html += `<select onchange="setFaceFilter(this.value)">`;
+  html += `<option value="all" ${faceFilterMode === 'all' ? 'selected' : ''}>All Faces (${allPersons.length})</option>`;
+  const keptCount = allPersons.filter(p => KEPT_FACES.has(p)).length;
+  html += `<option value="kept" ${faceFilterMode === 'kept' ? 'selected' : ''}>Kept Faces (${keptCount})</option>`;
+  html += '</select>';
+  html += '</div>';
+
+  if (visiblePersons.length === 0) {
+    html += '<div style="color:var(--text2);text-align:center;padding:24px;">No kept faces yet. Click the star on a face to keep it.</div>';
+  }
+
   html += '<div class="faces-grid">';
-  persons.forEach(p => {
+  visiblePersons.forEach(p => {
     const thumb = PERSON_THUMBS[p];
     const imgHtml = thumb
       ? `<img src="data:image/jpeg;base64,${thumb}" alt="${p}">`
       : '<div class="face-placeholder">👤</div>';
     const count = imgCount[p] || 0;
-    html += `<div class="face-card" onclick="filterByFace('${p.replace(/'/g, "\\'")}')" title="Click to show photos of ${p}">
+    const isKept = KEPT_FACES.has(p);
+    const escapedP = p.replace(/'/g, "\\'");
+    html += `<div class="face-card ${isKept ? 'kept' : ''}" onclick="filterByFace('${escapedP}')" title="Click to show photos of ${p}">
+      ${isKept ? '<span class="face-keep-badge">KEEP</span>' : ''}
       ${imgHtml}
       <div class="face-label">${p}</div>
       <div class="face-count">${count} photo${count !== 1 ? 's' : ''}</div>
+      <button class="face-keep-btn ${isKept ? 'active' : ''}" onclick="event.stopPropagation(); toggleKeepFace('${escapedP}')" title="${isKept ? 'Remove from kept' : 'Mark as kept'}">
+        ${isKept ? '★ Kept' : '☆ Keep'}
+      </button>
     </div>`;
   });
   html += '</div>';
   html += '<div style="margin-top:16px;"><button class="manage-btn" onclick="openFaceManager()" style="width:auto;padding:8px 16px;">Rename / Merge Faces</button></div>';
 
   panel.innerHTML = html;
+}
+
+function setFaceFilter(mode) {
+  faceFilterMode = mode;
+  renderFacesPanel();
+}
+
+async function toggleKeepFace(personName) {
+  if (KEPT_FACES.has(personName)) {
+    KEPT_FACES.delete(personName);
+  } else {
+    KEPT_FACES.add(personName);
+  }
+  // Persist kept faces using the face names system (store with special __kept__ marker)
+  try {
+    const keepMap = {};
+    KEPT_FACES.forEach(p => { keepMap[p] = '__kept__'; });
+    // Load existing name map, merge, save
+    const existing = await window.api.loadFaceNames(currentFolder) || {};
+    // Remove old __kept__ entries
+    Object.keys(existing).forEach(k => { if (existing[k] === '__kept__') delete existing[k]; });
+    Object.assign(existing, keepMap);
+    await window.api.saveFaceNames(currentFolder, existing);
+  } catch (_) {}
+  renderFacesPanel();
 }
 
 function filterByFace(personName) {
@@ -1777,8 +1986,9 @@ function compareTuples(a, b) {
 
 function renderDuplicates() {
   const panel = document.getElementById('dupPanel');
+  const progressHtml = document.getElementById('dupProgress')?.outerHTML || '';
   if (!DUP_GROUPS) {
-    panel.innerHTML = '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates detected.<br>Scan a folder to check for duplicates.</p></div>';
+    panel.innerHTML = progressHtml + '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates detected.<br>Scan a folder to check for duplicates.</p></div>';
     return;
   }
 
@@ -1793,11 +2003,11 @@ function renderDuplicates() {
                   + visibleNear.reduce((s, g) => s + g.duplicates.length, 0);
 
   if (exact.length + near.length === 0) {
-    panel.innerHTML = '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates found in your photo library.</p></div>';
+    panel.innerHTML = progressHtml + '<div class="no-dups"><div class="big-icon">✓</div><p>No duplicates found in your photo library.</p></div>';
     return;
   }
 
-  let html = '';
+  let html = progressHtml;
 
   // Summary cards
   html += '<div class="dup-summary">';
