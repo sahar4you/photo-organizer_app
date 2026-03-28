@@ -445,6 +445,7 @@
   <div class="lb-main">
     <div class="lb-toolbar">
       <button onclick="toggleLbPanel()" title="Toggle info panel">i</button>
+      <button onclick="deleteLightboxFile()" title="Delete file" style="color:#ff5252;">🗑</button>
       <button onclick="closeLightbox()" title="Close">×</button>
     </div>
     <button class="lb-nav lb-prev" onclick="navLightbox(-1)">‹</button>
@@ -515,6 +516,57 @@ let TAGS_MAP = {};        // { rel_path: [tag1, tag2] }
 let selectMode = false;   // multi-select mode
 let SELECTED_PHOTOS = new Set(); // rel_paths of selected photos
 let showFolderName = localStorage.getItem('showFolderName') !== 'false'; // default: true
+
+// ---- Electron-native dialog helpers (NO browser alert/confirm/prompt) ----
+async function showMsg(message, detail, type = 'info') {
+  await window.api.showMessageBox({
+    type: type,
+    buttons: ['OK'],
+    title: type === 'error' ? 'Error' : 'Info',
+    message: String(message),
+    detail: detail ? String(detail) : undefined,
+  });
+}
+
+async function showConfirmDialog(message, detail, okLabel = 'OK') {
+  const result = await window.api.showMessageBox({
+    type: 'question',
+    buttons: ['Cancel', okLabel],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Confirm',
+    message: String(message),
+    detail: detail ? String(detail) : undefined,
+  });
+  return result.response === 1;
+}
+
+// ---- Lightbox delete handler ----
+async function deleteLightboxFile() {
+  if (currentLbIndex < 0 || currentLbIndex >= filtered.length) return;
+  const f = filtered[currentLbIndex];
+  const result = await window.api.deleteFile(f.path);
+  if (result.status === 'trashed') {
+    closeLightbox();
+    // Remove from data and re-render
+    DATA = DATA.filter(d => d.path !== f.path);
+    // Remove from duplicate groups if present
+    if (DUP_GROUPS) {
+      for (const g of (DUP_GROUPS.exact || [])) {
+        g.duplicates = g.duplicates.filter(d => d !== f.rel_path);
+      }
+      for (const g of (DUP_GROUPS.near || [])) {
+        g.duplicates = g.duplicates.filter(d => d !== f.rel_path);
+        g.members = (g.members || []).filter(m => m.rel_path !== f.rel_path);
+      }
+    }
+    applyFilters();
+    renderDuplicates();
+    await showMsg('File deleted', `${f.name} has been sent to the recycle bin.`);
+  } else if (result.status === 'error') {
+    await showMsg('Delete failed', result.message, 'error');
+  }
+}
 
 // ---- Folder History ----
 function getFolderHistory() {
@@ -639,7 +691,7 @@ async function scanCurrentFolder() {
     const validRels = DATA.filter(f => f.type === 'image').map(f => f.rel_path);
     window.api.cleanupStaleThumbnails(currentFolder, validRels).catch(() => {});
   } catch (err) {
-    alert('Scan failed: ' + err.message);
+    showMsg('Scan failed', err.message, 'error');
   }
   document.getElementById('loadingOverlay').classList.remove('open');
   document.getElementById('progressBarTrack').style.display = 'none';
@@ -1196,8 +1248,8 @@ async function previewTrashSelected() {
       const results = await window.api.trashFiles(paths);
       const trashed = results.filter(r => r.status === 'trashed').length;
       await scanCurrentFolder();
-      alert(`Done! ${trashed} file(s) sent to recycle bin.`);
-    } catch (err) { alert('Trash failed: ' + err.message); }
+      showMsg('Done', `${trashed} file(s) sent to recycle bin.`);
+    } catch (err) { showMsg('Trash failed', err.message, 'error'); }
     document.getElementById('loadingOverlay').classList.remove('open');
   });
 }
@@ -1248,7 +1300,7 @@ async function saveFaceNames() {
   try {
     await window.api.saveFaceNames(currentFolder, nameMap);
   } catch (e) {
-    alert('Failed to save: ' + e.message);
+    showMsg('Failed to save', e.message, 'error');
     return;
   }
 
@@ -1489,7 +1541,7 @@ function handleTagKeydown(e) {
 }
 
 function moveTaggedToFolder() {
-  if (SELECTED_PHOTOS.size === 0) { alert('No photos selected.'); return; }
+  if (SELECTED_PHOTOS.size === 0) { showMsg('No photos selected', 'Select photos first before moving.'); return; }
   const items = [...SELECTED_PHOTOS];
   let listHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be moved.</p>`;
   listHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Target subfolder name:</label>';
@@ -1506,7 +1558,7 @@ function moveTaggedToFolder() {
 
 async function executeMoveTagged() {
   const target = document.getElementById('moveTargetFolder').value.trim();
-  if (!target) { alert('Please enter a folder name.'); return; }
+  if (!target) { showMsg('Missing folder name', 'Please enter a folder name.'); return; }
   const items = [...SELECTED_PHOTOS];
   document.getElementById('loadingOverlay').classList.add('open');
   document.getElementById('progressText').textContent = 'Moving files...';
@@ -1514,16 +1566,16 @@ async function executeMoveTagged() {
     const results = await window.api.moveTaggedFiles(currentFolder, items, target);
     const moved = results.filter(r => r.status === 'moved').length;
     await scanCurrentFolder();
-    alert(`Done! ${moved} file(s) moved to "${target}" folder.`);
+    showMsg('Done', `${moved} file(s) moved to "${target}" folder.`);
   } catch (err) {
-    alert('Move failed: ' + err.message);
+    showMsg('Move failed', err.message, 'error');
   }
   document.getElementById('loadingOverlay').classList.remove('open');
 }
 
 // ---- Export Selected ----
 function exportSelected() {
-  if (SELECTED_PHOTOS.size === 0) { alert('No photos selected.'); return; }
+  if (SELECTED_PHOTOS.size === 0) { showMsg('No photos selected', 'Select photos first before exporting.'); return; }
   const items = [...SELECTED_PHOTOS];
   let bodyHtml = `<p style="font-size:12px;margin-bottom:8px;">${items.length} file(s) will be copied.</p>`;
   bodyHtml += '<label style="font-size:12px;display:block;margin-bottom:4px;">Export folder name:</label>';
@@ -1538,7 +1590,7 @@ function exportSelected() {
 
 async function executeExport() {
   const name = document.getElementById('exportFolderName').value.trim();
-  if (!name) { alert('Please enter a folder name.'); return; }
+  if (!name) { showMsg('Missing folder name', 'Please enter a folder name.'); return; }
   const preserve = document.getElementById('exportPreserveStructure').checked;
   const items = [...SELECTED_PHOTOS];
   document.getElementById('loadingOverlay').classList.add('open');
@@ -1546,9 +1598,9 @@ async function executeExport() {
   try {
     const result = await window.api.exportFiles(currentFolder, items, name, preserve);
     const exported = result.results.filter(r => r.status === 'exported').length;
-    alert(`Done! ${exported} file(s) exported to:\nExported/${name}/`);
+    showMsg('Done', `${exported} file(s) exported to:\nExported/${name}/`);
   } catch (err) {
-    alert('Export failed: ' + err.message);
+    showMsg('Export failed', err.message, 'error');
   }
   document.getElementById('loadingOverlay').classList.remove('open');
 }
@@ -1560,12 +1612,13 @@ function closeHelp() { document.getElementById('helpModal').classList.remove('op
 // ---- Clear Cache ----
 async function clearCache() {
   if (!currentFolder) return;
-  if (!confirm('This will delete hash_cache.json and all cached thumbnails.\nContinue?')) return;
+  const ok = await showConfirmDialog('Clear Cache', 'This will delete hash_cache.json and all cached thumbnails.\nContinue?', 'Clear');
+  if (!ok) return;
   try {
     const removed = await window.api.clearCache(currentFolder);
-    alert('Cache cleared: ' + (removed.length > 0 ? removed.join(', ') : 'nothing to clear'));
+    showMsg('Cache cleared', removed.length > 0 ? removed.join(', ') : 'Nothing to clear');
   } catch (err) {
-    alert('Failed to clear cache: ' + err.message);
+    showMsg('Failed to clear cache', err.message, 'error');
   }
 }
 
@@ -2018,7 +2071,7 @@ function confirmAction() {
 
 // ---- Move Duplicates (dry_run preview then actual move) ----
 function previewMoveDups() {
-  if (DUP_SELECTED.size === 0) { alert('No duplicates selected.'); return; }
+  if (DUP_SELECTED.size === 0) { showMsg('No duplicates selected', 'Select duplicates first.'); return; }
   const items = [...DUP_SELECTED];
   let listHtml = '<div class="preview-list">';
   items.forEach(rel => {
@@ -2045,16 +2098,16 @@ async function executeMoveDups() {
     updateDupBadge();
     renderDuplicates();
     const moved = (result.duplicate_moved || []).filter(m => m.status === 'moved').length;
-    alert(`Done! ${moved} file(s) moved to __duplicates__ folder.`);
+    showMsg('Done', `${moved} file(s) moved to __duplicates__ folder.`);
   } catch (err) {
-    alert('Move failed: ' + err.message);
+    showMsg('Move failed', err.message, 'error');
   }
   document.getElementById('loadingOverlay').classList.remove('open');
 }
 
 // ---- Trash Duplicates (recycle bin) ----
 function previewTrashDups() {
-  if (DUP_SELECTED.size === 0) { alert('No duplicates selected.'); return; }
+  if (DUP_SELECTED.size === 0) { showMsg('No duplicates selected', 'Select duplicates first.'); return; }
   const items = [...DUP_SELECTED];
   let listHtml = '<div class="preview-list">';
   items.forEach(rel => {
@@ -2079,11 +2132,11 @@ async function executeTrashDups() {
     const trashed = results.filter(r => r.status === 'trashed').length;
     const errors = results.filter(r => r.status === 'error');
     await scanCurrentFolder();
-    let msg = `Done! ${trashed} file(s) sent to recycle bin.`;
+    let msg = `${trashed} file(s) sent to recycle bin.`;
     if (errors.length > 0) msg += `\n${errors.length} file(s) could not be trashed.`;
-    alert(msg);
+    showMsg('Done', msg);
   } catch (err) {
-    alert('Trash failed: ' + err.message);
+    showMsg('Trash failed', err.message, 'error');
   }
   document.getElementById('loadingOverlay').classList.remove('open');
 }

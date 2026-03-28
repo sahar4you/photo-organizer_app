@@ -552,7 +552,23 @@ def detect_duplicates(files, folder, threshold=10, dry_run=True):
     # Step 4: Save updated cache
     save_hash_cache(folder, cache)
 
-    # Step 5: Build result
+    # Step 5: Validate and deduplicate groups (ensure unique paths)
+    for g in exact_groups:
+        g["duplicates"] = list(dict.fromkeys(d for d in g["duplicates"] if d != g["keep"]))
+    for g in near_groups:
+        seen = set()
+        deduped_members = []
+        for m in g["members"]:
+            if m["rel_path"] not in seen:
+                seen.add(m["rel_path"])
+                deduped_members.append(m)
+        g["members"] = deduped_members
+        g["duplicates"] = list(dict.fromkeys(d for d in g["duplicates"] if d != g["keep"]))
+        # Validate: log if any group had duplicate entries
+        all_paths = [g["keep"]] + g["duplicates"]
+        if len(set(all_paths)) != len(all_paths):
+            log_error(f"Duplicate paths in near group: {all_paths}")
+
     duplicate_groups = {"exact": exact_groups, "near": near_groups}
 
     # Step 6: Move duplicates (or dry run)
